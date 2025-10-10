@@ -1214,7 +1214,7 @@ class MainWindow(QMainWindow):
         """Lädt Einstellungen aus 'settings.json', falls die Datei existiert."""
         try:
             if os.path.exists('settings.json'):
-                with open('settings.json', 'r') as f: return json.load(f)
+                with open('settings.json', 'r', encoding='utf-8') as f: return json.load(f)
         except (json.JSONDecodeError, IOError): pass
         return {}
         
