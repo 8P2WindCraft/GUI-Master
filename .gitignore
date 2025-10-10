@@ -11,21 +11,19 @@ Output/
 exports/
 master.xlsx
 settings.json
-Pictures/
 *.docx
 *.xlsx
 *.log
 *.exe
-*.ico
-*.png
-*.jpg
-*.jpeg
-*.webp
-*.gif
 *.pdf
 .vscode/
 .idea/
 .cursor/
 .windsurf/
 .codeium/
-*.spec
+
+# Project assets
+!Pictures/
+!Logo.ico
+!Logo.png
+!pyside7.0_gui.spec
