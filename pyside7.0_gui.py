@@ -923,15 +923,23 @@ class MainWindow(QMainWindow):
         Normalisiert alle aktuellen Pfade in der UI (Button-Callback).
         Zeigt danach eine Bestätigung an.
         """
+        changed_count = 0
         for key, value in self.paths.items():
-            normalized = self._normalize_path(value)
-            self.paths[key] = normalized
-            if hasattr(self, f"{key}_edit"):
-                getattr(self, f"{key}_edit").setText(normalized)
-        self.save_all_settings()
-        QMessageBox.information(self, "Pfade normalisiert", 
-                                f"Alle Pfade wurden normalisiert (Benutzername '{self.current_username}' → '{{username}}').\n\n"
-                                "Die Pfade funktionieren jetzt auf allen Rechnern!")
+            if value and '{username}' not in value:  # Nur normalisieren wenn noch kein {username} drin steht
+                normalized = self._normalize_path(value)
+                self.paths[key] = normalized
+                if hasattr(self, f"{key}_edit"):
+                    getattr(self, f"{key}_edit").setText(normalized)
+                changed_count += 1
+        
+        if changed_count > 0:
+            self.save_all_settings()
+            QMessageBox.information(self, "Pfade normalisiert", 
+                                    f"{changed_count} Pfade wurden normalisiert (Benutzername → '{{username}}').\n\n"
+                                    "Die Pfade funktionieren jetzt auf allen Rechnern!")
+        else:
+            QMessageBox.information(self, "Bereits normalisiert", 
+                                    "Alle Pfade sind bereits normalisiert (enthalten bereits '{username}').")
     
     def _collect_project_dict(self):
         """Sammelt den aktuellen Zustand für ein Projekt-JSON."""
