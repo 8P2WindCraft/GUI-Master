@@ -892,15 +892,17 @@ class MainWindow(QMainWindow):
     def _normalize_path(self, path):
         """
         Normalisiert einen Pfad für portables Speichern:
-        Ersetzt den aktuellen Benutzernamen durch {username}.
-        Beispiel: C:/Users/Jonas/... → C:/Users/{username}/...
+        Ersetzt JEDEN Benutzernamen nach C:/Users/ durch {username}.
+        Beispiel: C:/Users/BeyzaAygündüz/... → C:/Users/{username}/...
         """
         if not path:
             return path
-        # Windows: C:\Users\Jonas → C:\Users\{username}
-        # Auch: C:/Users/Jonas → C:/Users/{username}
-        normalized = path.replace(f'C:\\Users\\{self.current_username}', 'C:\\Users\\{username}')
-        normalized = normalized.replace(f'C:/Users/{self.current_username}', 'C:/Users/{username}')
+        
+        import re
+        # Beide Slash-Richtungen: C:\Users\<beliebiger_name>\ und C:/Users/<beliebiger_name>/
+        # Regex erkennt alles zwischen Users\ und dem nächsten \ oder /
+        normalized = re.sub(r'C:\\Users\\[^\\]+', r'C:\\Users\\{username}', path)
+        normalized = re.sub(r'C:/Users/[^/]+', r'C:/Users/{username}', normalized)
         return normalized
     
     def _denormalize_path(self, path):
