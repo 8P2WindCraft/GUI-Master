@@ -627,6 +627,8 @@ class MainWindow(QMainWindow):
         self.category_widgets = {}
         self.theme_action_group = None
         self.last_export_path = None
+        # Aktuellen Windows-Benutzernamen ermitteln (für portable Pfade)
+        self.current_username = os.environ.get('USERNAME', os.environ.get('USER', 'UnknownUser'))
         self.load_settings_and_init_vars()
         self.setup_ui()
 
@@ -743,11 +745,16 @@ class MainWindow(QMainWindow):
         utc_format_layout.addWidget(self.datetime_utc_format_edit)
         layout.addLayout(utc_format_layout)
 
-        # Versions-Info
+        # Versions-Info und Pfad-Normalisierung
         version_layout = QHBoxLayout()
         version_layout.addWidget(QLabel(f"Version: {VERSION}"))
         version_layout.addWidget(QLabel(f"Build: {BUILD_DATE}"))
         version_layout.addStretch()
+        # Button: Pfade normalisieren für Team-Portabilität
+        normalize_btn = QPushButton("🔄 Pfade normalisieren")
+        normalize_btn.setToolTip(f"Wandelt Benutzername '{self.current_username}' in '{{username}}' um,\ndamit Projekte auf allen Rechnern funktionieren.")
+        normalize_btn.clicked.connect(self.normalize_all_paths)
+        version_layout.addWidget(normalize_btn)
         layout.addLayout(version_layout)
 
         layout.addWidget(QFrame(frameShape=QFrame.HLine))
@@ -882,6 +889,48 @@ class MainWindow(QMainWindow):
     # -----------------------------
     # Projektverwaltung - Methoden
     # -----------------------------
+    def _normalize_path(self, path):
+        """
+        Normalisiert einen Pfad für portables Speichern:
+        Ersetzt den aktuellen Benutzernamen durch {username}.
+        Beispiel: C:/Users/Jonas/... → C:/Users/{username}/...
+        """
+        if not path:
+            return path
+        # Windows: C:\Users\Jonas → C:\Users\{username}
+        # Auch: C:/Users/Jonas → C:/Users/{username}
+        normalized = path.replace(f'C:\\Users\\{self.current_username}', 'C:\\Users\\{username}')
+        normalized = normalized.replace(f'C:/Users/{self.current_username}', 'C:/Users/{username}')
+        return normalized
+    
+    def _denormalize_path(self, path):
+        """
+        Denormalisiert einen Pfad beim Laden:
+        Ersetzt {username} durch den aktuellen Benutzernamen.
+        Beispiel: C:/Users/{username}/... → C:/Users/Jonas/...
+        """
+        if not path:
+            return path
+        # Beide Slash-Richtungen unterstützen
+        denormalized = path.replace('C:\\Users\\{username}', f'C:\\Users\\{self.current_username}')
+        denormalized = denormalized.replace('C:/Users/{username}', f'C:/Users/{self.current_username}')
+        return denormalized
+    
+    def normalize_all_paths(self):
+        """
+        Normalisiert alle aktuellen Pfade in der UI (Button-Callback).
+        Zeigt danach eine Bestätigung an.
+        """
+        for key, value in self.paths.items():
+            normalized = self._normalize_path(value)
+            self.paths[key] = normalized
+            if hasattr(self, f"{key}_edit"):
+                getattr(self, f"{key}_edit").setText(normalized)
+        self.save_all_settings()
+        QMessageBox.information(self, "Pfade normalisiert", 
+                                f"Alle Pfade wurden normalisiert (Benutzername '{self.current_username}' → '{{username}}').\n\n"
+                                "Die Pfade funktionieren jetzt auf allen Rechnern!")
+    
     def _collect_project_dict(self):
         """Sammelt den aktuellen Zustand für ein Projekt-JSON."""
         # Stelle sicher, dass Settings aus Spins/Textfeldern aktuell sind
@@ -890,9 +939,13 @@ class MainWindow(QMainWindow):
                 self.settings[key] = getattr(self, f"{key}_spin").value()
         if hasattr(self, 'datetime_utc_format_edit'):
             self.settings['datetime_utc_format'] = self.datetime_utc_format_edit.text()
+        
+        # Pfade normalisieren (Benutzername → {username}) für Portabilität
+        normalized_paths = {k: self._normalize_path(v) for k, v in self.paths.items()}
+        
         return {
             'version': VERSION,
-            'paths': self.paths,
+            'paths': normalized_paths,
             'settings': self.settings,
             'categories': self.categories,
             'saved_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -900,7 +953,10 @@ class MainWindow(QMainWindow):
 
     def _apply_project_dict(self, data):
         """Wendet ein geladenes Projekt auf UI und Zustand an."""
-        self.paths = data.get('paths', self.paths)
+        # Pfade denormalisieren ({username} → aktueller Benutzername)
+        loaded_paths = data.get('paths', self.paths)
+        self.paths = {k: self._denormalize_path(v) for k, v in loaded_paths.items()}
+        
         self.settings = {**self.settings, **data.get('settings', {})}
         self.categories = data.get('categories', self.categories)
 
