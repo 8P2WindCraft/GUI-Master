@@ -647,6 +647,9 @@ class MainWindow(QMainWindow):
             'datetime_utc_format': last.get('datetime_utc_format', '%Y-%m-%d %H:%M:%S UTC')
         }
         self.categories = last.get('categories', {'b_': 'Beschilderung', 'ba_': 'Betriebsanweisung'})
+        # Projektverwaltung: zuletzt verwendete Projekte und aktiver Projektpfad
+        self.recent_projects = last.get('recent_projects', [])
+        self.current_project_path = last.get('last_project_path', None)
 
     def setup_ui(self):
         """Erstellt und arrangiert alle UI-Elemente im Hauptfenster."""
@@ -837,8 +840,26 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.log_text)
 
     def setup_menu(self):
-        """Erstellt die Menüleiste für die Anwendung, inkl. Theme-Auswahl."""
+        """Erstellt die Menüleiste für die Anwendung, inkl. Projekt- und Theme-Menüs."""
         menu_bar = self.menuBar()
+        # Projekt-Menü
+        project_menu = menu_bar.addMenu("Projekt")
+        act_new = QAction("Neu", self)
+        act_open = QAction("Öffnen...", self)
+        act_save = QAction("Speichern", self)
+        act_save_as = QAction("Speichern unter...", self)
+        project_menu.addAction(act_new)
+        project_menu.addAction(act_open)
+        project_menu.addSeparator()
+        project_menu.addAction(act_save)
+        project_menu.addAction(act_save_as)
+
+        act_new.triggered.connect(self.project_new)
+        act_open.triggered.connect(self.project_open)
+        act_save.triggered.connect(self.project_save)
+        act_save_as.triggered.connect(self.project_save_as)
+
+        # Ansicht/Theme
         view_menu = menu_bar.addMenu("Ansicht")
         theme_menu = view_menu.addMenu("Theme")
 
@@ -857,6 +878,141 @@ class MainWindow(QMainWindow):
             theme_menu.addAction(action)
 
         self.theme_action_group.triggered.connect(self.on_theme_selected)
+
+    # -----------------------------
+    # Projektverwaltung - Methoden
+    # -----------------------------
+    def _collect_project_dict(self):
+        """Sammelt den aktuellen Zustand für ein Projekt-JSON."""
+        # Stelle sicher, dass Settings aus Spins/Textfeldern aktuell sind
+        for key in self.settings:
+            if hasattr(self, f"{key}_spin"):
+                self.settings[key] = getattr(self, f"{key}_spin").value()
+        if hasattr(self, 'datetime_utc_format_edit'):
+            self.settings['datetime_utc_format'] = self.datetime_utc_format_edit.text()
+        return {
+            'version': VERSION,
+            'paths': self.paths,
+            'settings': self.settings,
+            'categories': self.categories,
+            'saved_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+
+    def _apply_project_dict(self, data):
+        """Wendet ein geladenes Projekt auf UI und Zustand an."""
+        self.paths = data.get('paths', self.paths)
+        self.settings = {**self.settings, **data.get('settings', {})}
+        self.categories = data.get('categories', self.categories)
+
+        # UI aktualisieren: Pfade
+        for key, value in self.paths.items():
+            if hasattr(self, f"{key}_edit"):
+                getattr(self, f"{key}_edit").setText(value)
+                self.validate_path(getattr(self, f"{key}_edit"))
+        # Settings (Spins)
+        for key in ['header_row', 'svg_scale', 'png_compression']:
+            if hasattr(self, f"{key}_spin"):
+                getattr(self, f"{key}_spin").setValue(self.settings.get(key, getattr(self, f"{key}_spin").value()))
+        # UTC Format
+        if hasattr(self, 'datetime_utc_format_edit'):
+            self.datetime_utc_format_edit.setText(self.settings.get('datetime_utc_format', self.datetime_utc_format_edit.text()))
+        # Theme
+        self.apply_theme(self.settings.get('theme', 'Light'))
+        # Kategorien-UI neu aufbauen
+        if hasattr(self, 'categories_ui_layout'):
+            # Bestehende Widgets entfernen
+            for layout_item, _triplet in list(self.category_widgets.items()):
+                while layout_item.count():
+                    child = layout_item.takeAt(0)
+                    if child.widget(): child.widget().deleteLater()
+                self.categories_ui_layout.removeItem(layout_item)
+                layout_item.deleteLater()
+                del self.category_widgets[layout_item]
+            # Neu hinzufügen
+            for prefix, name in self.categories.items():
+                self.add_category_widget(prefix, name)
+        # Excel-Vorschau aktualisieren
+        self.show_excel_data()
+        # Einstellungen persistieren
+        self.save_all_settings()
+
+    def _remember_recent_project(self, file_path):
+        """Merkt sich ein Projekt in der Liste zuletzt verwendeter Projekte."""
+        try:
+            if not file_path:
+                return
+            if file_path in self.recent_projects:
+                self.recent_projects.remove(file_path)
+            self.recent_projects.insert(0, file_path)
+            self.recent_projects = self.recent_projects[:10]
+            self.current_project_path = file_path
+            # in settings.json speichern
+            self.save_all_settings()
+        except Exception:
+            pass
+
+    def project_new(self):
+        """Setzt ein leeres Projekt (ohne Pfade), behält aber Kategorien/Settings-Grundwerte bei."""
+        self.paths = {k: '' for k in self.paths.keys()}
+        for key in ['header_row', 'svg_scale', 'png_compression']:
+            if hasattr(self, f"{key}_spin"):
+                getattr(self, f"{key}_spin").setValue(self.settings.get(key, getattr(self, f"{key}_spin").minimum()))
+        if hasattr(self, 'datetime_utc_format_edit'):
+            self.datetime_utc_format_edit.setText('%Y-%m-%d %H:%M:%S UTC')
+        self.apply_theme('Light')
+        for key in self.paths:
+            if hasattr(self, f"{key}_edit"):
+                getattr(self, f"{key}_edit").setText('')
+                self.validate_path(getattr(self, f"{key}_edit"))
+        self.current_project_path = None
+        self.save_all_settings()
+
+    def project_open(self):
+        """Öffnet eine Projektdatei (*.dta.json)."""
+        file_path, _ = QFileDialog.getOpenFileName(self, "Projekt öffnen", os.getcwd(), "Projektdateien (*.dta.json *.json)")
+        if not file_path:
+            return
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            # Erlaube beide Formate: altes Flat-Settings.json oder neues Projektformat
+            if 'paths' in data and 'settings' in data:
+                self._apply_project_dict(data)
+            else:
+                # Altes Format: direkt anwenden
+                self._apply_project_dict({'paths': {k: data.get(k, '') for k in self.paths.keys()},
+                                          'settings': {k: data.get(k, self.settings.get(k)) for k in self.settings.keys()},
+                                          'categories': data.get('categories', self.categories)})
+            self._remember_recent_project(file_path)
+        except Exception as e:
+            QMessageBox.warning(self, "Fehler", f"Projekt konnte nicht geladen werden: {e}")
+
+    def project_save(self):
+        """Speichert das aktuelle Projekt an den zuletzt genutzten Projektpfad oder fragt nach einem neuen Pfad."""
+        if not self.current_project_path:
+            return self.project_save_as()
+        try:
+            data = self._collect_project_dict()
+            with open(self.current_project_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+            QMessageBox.information(self, "Gespeichert", f"Projekt gespeichert: {self.current_project_path}")
+        except Exception as e:
+            QMessageBox.warning(self, "Fehler", f"Projekt konnte nicht gespeichert werden: {e}")
+
+    def project_save_as(self):
+        """Speichert das aktuelle Projekt unter einem neuen Dateinamen (*.dta.json)."""
+        default_name = 'projekt.dta.json'
+        file_path, _ = QFileDialog.getSaveFileName(self, "Projekt speichern unter", os.path.join(os.getcwd(), default_name), "Projektdateien (*.dta.json)")
+        if not file_path:
+            return
+        try:
+            data = self._collect_project_dict()
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+            self._remember_recent_project(file_path)
+            QMessageBox.information(self, "Gespeichert", f"Projekt gespeichert: {file_path}")
+        except Exception as e:
+            QMessageBox.warning(self, "Fehler", f"Projekt konnte nicht gespeichert werden: {e}")
 
     def on_theme_selected(self, action):
         """Wird aufgerufen, wenn ein Theme aus dem Menü ausgewählt wird."""
@@ -986,8 +1142,14 @@ class MainWindow(QMainWindow):
             self.settings['datetime_utc_format'] = self.datetime_utc_format_edit.text()
 
         try:
-            with open('settings.json', 'w') as f:
-                json.dump({**self.paths, **self.settings, 'categories': self.categories}, f, indent=4)
+            payload = {**self.paths, **self.settings, 'categories': self.categories}
+            # Projektverwaltung: letzte Projekte und aktueller Projektpfad speichern
+            if hasattr(self, 'recent_projects'):
+                payload['recent_projects'] = self.recent_projects
+            if hasattr(self, 'current_project_path') and self.current_project_path:
+                payload['last_project_path'] = self.current_project_path
+            with open('settings.json', 'w', encoding='utf-8') as f:
+                json.dump(payload, f, indent=4, ensure_ascii=False)
         except IOError as e: 
             self.log_text.append(f"Speicherfehler: {e}")
             _log_handler(f"Speicherfehler: {e}", "ERROR", self.append_html_log)
