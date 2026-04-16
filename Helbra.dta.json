@@ -1,0 +1,25 @@
+{
+    "version": "7.0.1",
+    "paths": {
+        "excel_path": "C:/Users/{username}/8.2 Group/23-HSE - General/Projekte - 23/02_inaktiv/257783_EEF_WP Helbra_GBU_2025/WP Helbra/Generator/master1.xlsx",
+        "vorlagen_ordner": "C:/Users/{username}/8.2 Group/23-HSE - General/Projekte - 23/02_inaktiv/257783_EEF_WP Helbra_GBU_2025/WP Helbra/Generator/templates",
+        "bilder_ordner": "",
+        "export_ordner": "C:/Users/{username}/8.2 Group/23-HSE - General/Projekte - 23/02_inaktiv/257783_EEF_WP Helbra_GBU_2025/WP Helbra/Generator/exports"
+    },
+    "settings": {
+        "header_row": 3,
+        "svg_scale": 5,
+        "png_compression": 0,
+        "theme": "Light",
+        "datetime_utc_format": "%Y-%m-%d %H:%M:%S UTC",
+        "projekt_name_override": "GK",
+        "export_as_pdf": false
+    },
+    "categories": {
+        "b_": "Beschilderung",
+        "ba_": "Betriebsanweisung",
+        "d_": "Dokumente",
+        "n_": "Notfalldokumente"
+    },
+    "saved_at": "2026-02-09 18:47:02"
+}

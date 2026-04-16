@@ -1,0 +1,1 @@
+"""Kernmodule der Anwendung."""

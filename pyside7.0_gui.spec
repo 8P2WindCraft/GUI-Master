@@ -1,15 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 
 a = Analysis(
     ['pyside7.0_gui.py'],
-    pathex=[],
+    pathex=[os.path.dirname(os.path.abspath(SPEC))],
     binaries=[],
     datas=[
         ('Pictures', 'Pictures'), 
         ('dark.qss', '.'), 
         ('girly.qss', '.'),
-        ('Logo.ico', '.'),
-        ('Logo.png', '.')
+        ('Pictures/Logo.ico', '.'),
+        ('Pictures/Logo.png', '.')
     ],
     hiddenimports=[
         'PySide6.QtSvg',
@@ -22,7 +23,14 @@ a = Analysis(
         'openpyxl',
         'qrcode',
         'PIL',
-        'numpy'
+        'numpy',
+        'core',
+        'core.logic',
+        'core.logging',
+        'core.utils',
+        'gui',
+        'gui.main_window',
+        'app',
     ],
     hookspath=[],
     hooksconfig={},
@@ -52,5 +60,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='Logo.ico',
+    icon='Pictures/Logo.ico',
 )
