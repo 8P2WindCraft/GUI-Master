@@ -431,6 +431,7 @@ def verarbeite_vorlagen(vorlagen_ordner, export_ordner, excel_path, progress_cal
         categories = {
             'b_': 'Beschilderung',
             'ba_': 'Betriebsanweisung',
+            'p_': 'Pläne',
             'a_': 'Allgemein',
             'hv_': 'Havarieplan'
         }
