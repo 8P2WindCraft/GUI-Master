@@ -2,7 +2,9 @@ import io
 import os
 import shutil
 import tempfile
+import threading
 import traceback
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import pandas as pd
@@ -23,6 +25,16 @@ from core.utils import svg_to_png_file_pyside
 def _norm_template_path(p):
     """Absoluter, plattformnormalisierter Pfad für Vergleiche (Windows: normcase)."""
     return os.path.normcase(os.path.normpath(os.path.abspath(p)))
+
+
+def _max_word_com_workers():
+    """Grenze für parallele Word-COM-Instanzen (PDF, Seitenprüfung)."""
+    return max(1, min(4, (os.cpu_count() or 2)))
+
+
+def _max_docgen_thread_workers():
+    """Grenze paralleler docxtpl-/Kopier-Jobs in Threads."""
+    return max(1, min(4, (os.cpu_count() or 2)))
 
 
 def _format_rule_decision_log(decision: dict, eintrag: dict, template_path: str) -> str:
@@ -262,7 +274,18 @@ def ersetze_platzhalter_mit_docxtpl(doc_path, context, svg_png_map, log_callback
     return doc
 
 
-def _speichere_dokument(doc, vorlage_pfad, eintrag, is_anlage, haupt_export_ordner, categories, log_callback, is_dark_mode=False):
+def _speichere_dokument(
+    doc,
+    vorlage_pfad,
+    eintrag,
+    is_anlage,
+    haupt_export_ordner,
+    categories,
+    log_callback,
+    is_dark_mode=False,
+    seitenpruefung_pending=None,
+    seitenpruefung_lock=None,
+):
     """
     Speichert ein generiertes Word-Dokument im richtigen Ordner und mit dem korrekten Namen.
 
@@ -272,6 +295,7 @@ def _speichere_dokument(doc, vorlage_pfad, eintrag, is_anlage, haupt_export_ordn
     - Benennung:
         - Anlagenspezifische Dokumente: '{seriennummer}_{vorlagenname}.docx'
         - Allgemeine Dokumente: '{vorlagenname}.docx'
+    - Optional: seitenpruefung_pending sammelt (Vorlage, Ziel, Dateiname) für batched Seitenprüfung.
     """
     vorlage_name = os.path.basename(vorlage_pfad)
     cleaned_name = vorlage_name
@@ -303,6 +327,14 @@ def _speichere_dokument(doc, vorlage_pfad, eintrag, is_anlage, haupt_export_ordn
             log_callback,
             is_dark_mode
         )
+
+    if seitenpruefung_pending is not None:
+        entry = (vorlage_pfad, ziel_pfad, ziel_name)
+        if seitenpruefung_lock is not None:
+            with seitenpruefung_lock:
+                seitenpruefung_pending.append(entry)
+        else:
+            seitenpruefung_pending.append(entry)
 
 
 def _lageplan_ziel_pfad(vorlage_pfad, eintrag, haupt_export_ordner, categories):
@@ -355,6 +387,143 @@ def _normalize_windows_path_for_word_com(path):
     """Normalisiert Pfade für Word-COM (Backslashes, absolut, ohne URL-Encoding)."""
     normalized = os.path.normpath(os.path.abspath(path))
     return normalized.replace("/", "\\")
+
+
+# Word VBA: wdStatisticPages
+_WD_STATISTIC_PAGES = 2
+
+
+def _word_seitenanzahl_in_docx(docx_path):
+    """
+    Liefert die von Word berechnete Seitenzahl der .docx, oder None bei Fehler
+    (nicht Windows, kein Word/pywin32, Datei fehlt, COM).
+    """
+    if os.name != "nt" or not docx_path or not os.path.isfile(docx_path):
+        return None
+    try:
+        import pythoncom
+        import win32com.client
+    except ImportError:
+        return None
+    path = _normalize_windows_path_for_word_com(docx_path)
+    word = None
+    doc = None
+    n_out = None
+    try:
+        pythoncom.CoInitialize()
+        word = win32com.client.DispatchEx("Word.Application")
+        word.Visible = False
+        word.DisplayAlerts = 0
+        doc = word.Documents.Open(path, ReadOnly=True, AddToRecentFiles=False)
+        n_raw = int(doc.Content.ComputeStatistics(_WD_STATISTIC_PAGES))
+        n_out = n_raw if n_raw > 0 else None
+    except Exception:
+        n_out = None
+    finally:
+        if doc is not None:
+            try:
+                doc.Close(False)
+            except Exception:
+                pass
+        if word is not None:
+            try:
+                word.Quit()
+            except Exception:
+                pass
+        try:
+            pythoncom.CoUninitialize()
+        except Exception:
+            pass
+    return n_out
+
+
+def _seitenpruefung_zeile_sequenziell(
+    n_v, vorlage_basename, ausgabe_pfad, kurzname, log_callback, is_dark_mode
+):
+    """
+    Eine Seitenvergleichszeile (Hilfslogik, Fallback ohne Multiprocessing).
+    n_v: vorher ermittelte Seitenzahl der Vorlage oder None.
+    """
+    n_a = _word_seitenanzahl_in_docx(ausgabe_pfad)
+    if n_v is None or n_a is None or n_v < 1 or n_a < 1:
+        return None
+    if n_a > n_v:
+        msg = (
+            f"Seitenprüfung: „{kurzname}“ hat {n_a} Seite(n), die Vorlage "
+            f"„{vorlage_basename}“ hat {n_v} — bitte Inhalt/Layout prüfen."
+        )
+        _log_handler(msg, "WARN", log_callback, is_dark_mode)
+        return msg
+    return None
+
+
+def _seiten_row_mp_worker(args):
+    """
+    Worker für ProcessPool: (n_v, ausgabe_pfad, kurzname, vorlage_basename) -> warn_msg oder None
+    muss Modul-Top-Level sein (Windows-spawn).
+    """
+    n_v, ausgabe_pfad, kurzname, vorlage_basename = args
+    if n_v is None or n_v < 1:
+        return None
+    n_a = _word_seitenanzahl_in_docx(ausgabe_pfad)
+    if n_a is None or n_a < 1:
+        return None
+    if n_a > n_v:
+        return (
+            f"Seitenprüfung: „{kurzname}“ hat {n_a} Seite(n), die Vorlage "
+            f"„{vorlage_basename}“ hat {n_v} — bitte Inhalt/Layout prüfen."
+        )
+    return None
+
+
+def _fuehre_seitenpruefung_batched(
+    pending,
+    log_callback,
+    is_dark_mode,
+) -> list:
+    """
+    Führt Sammel-Seitenvergleiche aus (Vorlagen-Seitenzahlen pro Vorlage 1×, erzeugt parallel).
+    pending: list[tuple(vorlage_pfad, ausgabe_pfad, kurzname_ausgabe)]
+    Rückgabe: Liste der Warn-Strings; schreibt WARN ins Log.
+    """
+    if not pending or os.name != "nt":
+        return []
+    warnungen = []
+    workers = _max_word_com_workers()
+    v_unique = {}
+    for v, a, n in pending:
+        kn = _norm_template_path(v)
+        if kn not in v_unique:
+            v_unique[kn] = v
+    u_paths = list(v_unique.values())
+    v_to_n = {}
+    try:
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            counts = list(ex.map(_word_seitenanzahl_in_docx, u_paths))
+        v_to_n = {_norm_template_path(p): c for p, c in zip(u_paths, counts)}
+    except Exception:
+        for p in u_paths:
+            v_to_n[_norm_template_path(p)] = _word_seitenanzahl_in_docx(p)
+    try:
+        row_args = [
+            (v_to_n.get(_norm_template_path(v), None), a, n, os.path.basename(v))
+            for (v, a, n) in pending
+        ]
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            for msg in ex.map(_seiten_row_mp_worker, row_args):
+                if msg:
+                    _log_handler(msg, "WARN", log_callback, is_dark_mode)
+                    warnungen.append(msg)
+    except Exception:
+        cache = {_norm_template_path(p): n for p, n in v_to_n.items()}
+        for v, a, name in pending:
+            nv = cache.get(_norm_template_path(v))
+            msg = _seitenpruefung_zeile_sequenziell(
+                nv, os.path.basename(v), a, name, log_callback, is_dark_mode
+            )
+            if msg:
+                warnungen.append(msg)
+    return warnungen
 
 
 def _docx_to_pdf_word_com_single(docx_path):
@@ -439,6 +608,16 @@ def _docx_to_pdf_word_com_single(docx_path):
     return False, last_error
 
 
+def _docx_to_pdf_com_mp_wrapper(docx_path: str) -> tuple:
+    """Für ProcessPool: Rückgabe (docx_path, ok, fehlerstring). Muss top-level liegen."""
+    try:
+        ok, err = _docx_to_pdf_word_com_single(docx_path)
+        s = repr(err) if err is not None and not ok else None
+        return (docx_path, ok, s)
+    except Exception as e:
+        return (docx_path, False, repr(e))
+
+
 def konvertiere_ein_docx_zu_pdf(docx_path, log_callback=None):
     """Eine .docx-Datei per Word-COM in PDF umwandeln; loggt Ergebnis."""
     ok, err = _docx_to_pdf_word_com_single(docx_path)
@@ -462,7 +641,7 @@ def konvertiere_ein_docx_zu_pdf(docx_path, log_callback=None):
 
 
 def _convert_docx_to_pdf_in_folder(ordner, log_callback, progress_callback=None, file_callback=None):
-    """Konvertiert alle .docx-Dateien im Ordner (rekursiv) in PDFs über Word-COM (Windows)."""
+    """Konvertiert alle .docx-Dateien im Ordner (rekursiv) in PDFs über Word-COM (Windows). Mehrere parallel."""
     result = {
         "docx_count": 0,
         "success_count": 0,
@@ -495,8 +674,7 @@ def _convert_docx_to_pdf_in_folder(ordner, log_callback, progress_callback=None,
         log_callback("Keine Word-Dokumente zur PDF-Konvertierung gefunden.", "INFO")
         return result
 
-    for index, docx_path in enumerate(docx_paths, start=1):
-        name = os.path.basename(docx_path)
+    def _verarbeite_einzel(docx_path: str, name: str):
         if file_callback:
             file_callback(name)
         try:
@@ -510,8 +688,48 @@ def _convert_docx_to_pdf_in_folder(ordner, log_callback, progress_callback=None,
         except Exception as e:
             result["failure_count"] += 1
             log_callback(f"  -> PDF fehlgeschlagen für '{name}': {e}", "ERROR")
-        if progress_callback:
-            progress_callback(index, result["docx_count"])
+
+    use_parallel = os.name == "nt" and len(docx_paths) > 1
+    done = 0
+    ntot = result["docx_count"]
+    if use_parallel:
+        try:
+            log_callback(
+                f"  → PDF-Konvertierung: {ntot} Datei(en), bis zu {_max_word_com_workers()} parallele Word-Aufgaben",
+                "INFO",
+            )
+            with ProcessPoolExecutor(max_workers=_max_word_com_workers()) as ex:
+                future_map = {ex.submit(_docx_to_pdf_com_mp_wrapper, p): p for p in docx_paths}
+                for fut in as_completed(future_map):
+                    docx_path, ok, serr = fut.result()
+                    name = os.path.basename(docx_path)
+                    if file_callback:
+                        file_callback(name)
+                    if ok:
+                        result["success_count"] += 1
+                        log_callback(f"  -> PDF erstellt: {name}", "SUCCESS")
+                    else:
+                        result["failure_count"] += 1
+                        log_callback(f"  -> PDF fehlgeschlagen für '{name}': {serr}", "ERROR")
+                    done += 1
+                    if progress_callback:
+                        progress_callback(done, ntot)
+        except Exception as e:
+            log_callback(f"  → Parallele PDF-Ausführung fehlgeschlagen ({e}), fahre nacheinander fort.", "WARN")
+            result["success_count"] = 0
+            result["failure_count"] = 0
+            done = 0
+            for index, docx_path in enumerate(docx_paths, start=1):
+                name = os.path.basename(docx_path)
+                _verarbeite_einzel(docx_path, name)
+                if progress_callback:
+                    progress_callback(index, ntot)
+    else:
+        for index, docx_path in enumerate(docx_paths, start=1):
+            name = os.path.basename(docx_path)
+            _verarbeite_einzel(docx_path, name)
+            if progress_callback:
+                progress_callback(index, ntot)
 
     if result["success_count"]:
         log_callback(f"PDF-Erstellung abgeschlossen: {result['success_count']} Datei(en).", "SUCCESS")
@@ -749,6 +967,146 @@ def verarbeite_vorlagen_trockenlauf(
         return False
 
 
+def _fuehre_dokument_gen_jobs(
+    jobs,
+    parallel_doc_generation: bool,
+    progress_callback,
+    file_callback,
+    overall_total_steps,
+    worker_thread,
+    svg_png_map,
+    haupt_export_ordner,
+    categories,
+    datetime_utc_format,
+    bilder_ordner,
+    fallback_marken,
+    seitenpruefung_pending,
+    seitenpruefung_lock,
+    is_dark_mode,
+    _log,
+):
+    """
+    Führt die gesammelten Anlagen-/Allgemein-Jobs (docxtpl oder Lageplan-Kopie) aus.
+    parallel_doc_generation: mehrere ThreadPool-Worker; sonst nacheinander.
+    """
+    def _eintrag_kopie(eintrag):
+        if eintrag is None:
+            return {}
+        if isinstance(eintrag, dict):
+            return {k: eintrag[k] for k in eintrag}
+        try:
+            return dict(eintrag)
+        except Exception:
+            return eintrag
+
+    def _arbeite_lageplan(job):
+        if worker_thread and worker_thread.isInterruptionRequested():
+            return
+        if not job.get("src") or not os.path.isfile(job["src"]):
+            _log("Lageplan-Quelldatei fehlt, neu aus Vorlage.", "WARN")
+            rj = {
+                "type": "render",
+                "ix": job["ix"],
+                "template": job["vorlage_pfad"],
+                "data": _eintrag_kopie(job.get("eintrag")),
+                "is_anlage": True,
+            }
+            _arbeite_render(rj)
+            return
+        try:
+            os.makedirs(job["export_kat"], exist_ok=True)
+            ziel = os.path.join(job["export_kat"], job["ziel_name"])
+            shutil.copy2(job["src"], ziel)
+        except OSError as e:
+            _log(
+                f"Lageplan kopieren fehlgeschlagen ({e}), neu aus Vorlage.",
+                "WARN",
+            )
+            rj = {
+                "type": "render",
+                "ix": job["ix"],
+                "template": job["vorlage_pfad"],
+                "data": _eintrag_kopie(job.get("eintrag")),
+                "is_anlage": True,
+            }
+            _arbeite_render(rj)
+            return
+        progress_callback(job["ix"], overall_total_steps)
+        file_callback(job["vn"])
+        _log(
+            f"Lageplan übernommen (letzter Export): '{job['ziel_name']}'",
+            "SUCCESS",
+        )
+        ziel_lage = os.path.join(job["export_kat"], job["ziel_name"])
+        if seitenpruefung_lock is not None:
+            with seitenpruefung_lock:
+                seitenpruefung_pending.append((job["vorlage_pfad"], ziel_lage, job["ziel_name"]))
+        else:
+            seitenpruefung_pending.append((job["vorlage_pfad"], ziel_lage, job["ziel_name"]))
+
+    def _arbeite_render(job):
+        if worker_thread and worker_thread.isInterruptionRequested():
+            return
+        progress_callback(job["ix"], overall_total_steps)
+        file_callback(os.path.basename(job["template"]))
+        try:
+            data = _eintrag_kopie(job.get("data"))
+            context = data.copy()
+            for key, fallback_value in fallback_marken.items():
+                primary_value = context.get(key)
+                is_empty = pd.isna(primary_value) or (isinstance(primary_value, str) and not primary_value.strip())
+                if is_empty:
+                    context[key] = fallback_value
+            try:
+                context["datetime_utc"] = datetime.now().strftime("%Y-%m-%d")
+            except Exception as e:
+                context["datetime_utc"] = f"[Format-Fehler: {e}]"
+                _log(f"Ungültiges Zeitstempel-Format: '{datetime_utc_format}'. Fehler: {e}", "WARN")
+            context["_bilder_ordner"] = bilder_ordner
+            doc = ersetze_platzhalter_mit_docxtpl(job["template"], context, svg_png_map, _log)
+            _speichere_dokument(
+                doc,
+                job["template"],
+                data,
+                job["is_anlage"],
+                haupt_export_ordner,
+                categories,
+                _log,
+                is_dark_mode,
+                seitenpruefung_pending=seitenpruefung_pending,
+                seitenpruefung_lock=seitenpruefung_lock,
+            )
+        except TemplateSyntaxError as e:
+            _log(
+                f"FEHLER in Vorlage '{os.path.basename(job['template'])}': Ungültige Syntax. Bitte prüfen Sie die Platzhalter.",
+                "FATAL",
+            )
+            _log(f"Details: {e}", "ERROR")
+        except Exception as e:
+            _log(f"FEHLER bei '{os.path.basename(job['template'])}': {e}", "ERROR")
+
+    def _arbeite(job):
+        t = job.get("type")
+        if t == "lageplan_copy":
+            _arbeite_lageplan(job)
+        else:
+            _arbeite_render(job)
+
+    if not parallel_doc_generation or len(jobs) <= 1:
+        for j in jobs:
+            if worker_thread and worker_thread.isInterruptionRequested():
+                break
+            _arbeite(j)
+    else:
+        max_w = _max_docgen_thread_workers()
+        with ThreadPoolExecutor(max_workers=max_w) as ex:
+            _log(
+                f"Dokumentenerzeugung: parallel mit bis zu {max_w} Threads (docxtpl / Lageplan).",
+                "INFO",
+            )
+            list(ex.map(_arbeite, jobs))
+
+
 def verarbeite_vorlagen_preview(
     vorlagen_ordner,
     export_ordner,
@@ -772,6 +1130,7 @@ def verarbeite_vorlagen_preview(
     reuse_lageplan_from_last_export=False,
     previous_export_root=None,
     preview_template_abs=None,
+    parallel_doc_generation=False,
 ):
     """
     Erzeugt eine Stichprobe wie im echten Lauf, aber nur mit der ersten Excel-Datenzeile
@@ -866,52 +1225,19 @@ def verarbeite_vorlagen_preview(
             datetime.now().strftime('%Y-%m-%d_%H%M%S') + "_" + projekt_name + "_Vorschau",
         )
 
-        current_doc = 0
+        seitenpruefung_pending = []
+        seitenpruefung_lock = threading.Lock() if parallel_doc_generation else None
+        jobs = []
+        job_ix = 0
         warned_lageplan_no_export = False
 
-        def process_and_save(template, data, is_anlage):
-            nonlocal current_doc
-            current_doc += 1
-            if worker_thread and worker_thread.isInterruptionRequested():
-                return
-
-            progress_callback(current_doc, overall_total_steps)
-            file_callback(os.path.basename(template))
+        def _eintrag_shallow(eintrag):
+            if isinstance(eintrag, dict):
+                return {k: eintrag[k] for k in eintrag}
             try:
-                context = data.copy()
-                for key, fallback_value in fallback_marken.items():
-                    primary_value = context.get(key)
-                    is_empty = pd.isna(primary_value) or (isinstance(primary_value, str) and not primary_value.strip())
-                    if is_empty:
-                        context[key] = fallback_value
-
-                try:
-                    context['datetime_utc'] = datetime.now().strftime('%Y-%m-%d')
-                except Exception as e:
-                    context['datetime_utc'] = f"[Format-Fehler: {e}]"
-                    _log(f"Ungültiges Zeitstempel-Format: '{datetime_utc_format}'. Fehler: {e}", "WARN")
-
-                context['_bilder_ordner'] = bilder_ordner
-
-                doc = ersetze_platzhalter_mit_docxtpl(template, context, svg_png_map, _log)
-                _speichere_dokument(
-                    doc,
-                    template,
-                    data,
-                    is_anlage,
-                    haupt_export_ordner,
-                    categories,
-                    _log,
-                    is_dark_mode,
-                )
-            except TemplateSyntaxError as e:
-                _log(
-                    f"FEHLER in Vorlage '{os.path.basename(template)}': Ungültige Syntax. Bitte prüfen Sie die Platzhalter.",
-                    "FATAL",
-                )
-                _log(f"Details: {e}", "ERROR")
-            except Exception as e:
-                _log(f"FEHLER bei '{os.path.basename(template)}': {e}", "ERROR")
+                return dict(eintrag)
+            except Exception:
+                return eintrag
 
         _log("\n--- Vorschau 'Anlagen' (nur erste Zeile) ---\n", "SEP")
         for vorlage_pfad in anlagen_templates:
@@ -949,7 +1275,16 @@ def verarbeite_vorlagen_preview(
                             "INFO",
                         )
                         warned_lageplan_no_export = True
-                    process_and_save(vorlage_pfad, eintrag_preview, True)
+                    job_ix += 1
+                    jobs.append(
+                        {
+                            "type": "render",
+                            "ix": job_ix,
+                            "template": vorlage_pfad,
+                            "data": _eintrag_shallow(eintrag_preview),
+                            "is_anlage": True,
+                        }
+                    )
                     continue
                 src = find_lageplan_source_file(
                     previous_export_root, categories, vorlage_pfad, eintrag_preview
@@ -958,24 +1293,18 @@ def verarbeite_vorlagen_preview(
                     vorlage_pfad, eintrag_preview, haupt_export_ordner, categories
                 )
                 if src:
-                    try:
-                        os.makedirs(export_kat, exist_ok=True)
-                        shutil.copy2(src, os.path.join(export_kat, ziel_name))
-                    except OSError as e:
-                        _log(
-                            f"Lageplan kopieren fehlgeschlagen ({e}), neu aus Vorlage.",
-                            "WARN",
-                        )
-                        process_and_save(vorlage_pfad, eintrag_preview, True)
-                        continue
-                    current_doc += 1
-                    if worker_thread and worker_thread.isInterruptionRequested():
-                        break
-                    progress_callback(current_doc, overall_total_steps)
-                    file_callback(vn)
-                    _log(
-                        f"Lageplan übernommen (letzter Export): '{ziel_name}'",
-                        "SUCCESS",
+                    job_ix += 1
+                    jobs.append(
+                        {
+                            "type": "lageplan_copy",
+                            "ix": job_ix,
+                            "export_kat": export_kat,
+                            "ziel_name": ziel_name,
+                            "src": src,
+                            "vorlage_pfad": vorlage_pfad,
+                            "vn": vn,
+                            "eintrag": _eintrag_shallow(eintrag_preview),
+                        }
                     )
                     continue
                 _log(
@@ -983,16 +1312,72 @@ def verarbeite_vorlagen_preview(
                     "Erstellung wie gewohnt aus Vorlage.",
                     "INFO",
                 )
-                process_and_save(vorlage_pfad, eintrag_preview, True)
+                job_ix += 1
+                jobs.append(
+                    {
+                        "type": "render",
+                        "ix": job_ix,
+                        "template": vorlage_pfad,
+                        "data": _eintrag_shallow(eintrag_preview),
+                        "is_anlage": True,
+                    }
+                )
                 continue
 
-            process_and_save(vorlage_pfad, eintrag_preview, True)
+            job_ix += 1
+            jobs.append(
+                {
+                    "type": "render",
+                    "ix": job_ix,
+                    "template": vorlage_pfad,
+                    "data": _eintrag_shallow(eintrag_preview),
+                    "is_anlage": True,
+                }
+            )
 
         if worker_thread and not worker_thread.isInterruptionRequested():
             _log("\n--- Vorschau 'Allgemein' ---\n", "SEP")
             if allgemein_templates:
                 for vorlage_pfad in allgemein_templates:
-                    process_and_save(vorlage_pfad, datensaetze[0], False)
+                    job_ix += 1
+                    jobs.append(
+                        {
+                            "type": "render",
+                            "ix": job_ix,
+                            "template": vorlage_pfad,
+                            "data": _eintrag_shallow(datensaetze[0]),
+                            "is_anlage": False,
+                        }
+                    )
+
+        if len(jobs) != generation_docs_total:
+            _log(
+                f"Hinweis: Vorschau-Jobs ({len(jobs)}) vs. gezählte erwartete Dokumente ({generation_docs_total}) - ggf. Log prüfen.",
+                "WARN",
+            )
+
+        _fuehre_dokument_gen_jobs(
+            jobs,
+            parallel_doc_generation,
+            progress_callback,
+            file_callback,
+            overall_total_steps,
+            worker_thread,
+            svg_png_map,
+            haupt_export_ordner,
+            categories,
+            datetime_utc_format,
+            bilder_ordner,
+            fallback_marken,
+            seitenpruefung_pending,
+            seitenpruefung_lock,
+            is_dark_mode,
+            _log,
+        )
+
+        seitenpruefung_warnungen = _fuehre_seitenpruefung_batched(
+            seitenpruefung_pending, _log, is_dark_mode
+        )
 
         docx_erzeugt = False
         if os.path.isdir(haupt_export_ordner):
@@ -1017,6 +1402,13 @@ def verarbeite_vorlagen_preview(
             return None
 
         _log("\n" + "=" * 60, "SEP")
+        if seitenpruefung_warnungen:
+            _log("--- Seitenprüfung: Zusammenfassung (Vorschau) ---", "SEP")
+            _log(
+                f"Bei {len(seitenpruefung_warnungen)} erzeugter Datei(en) weist das Dokument "
+                f"mehr Seiten auf als die zugehörige Vorlage (Details stehen im Log oben, Prüfung per Word, Windows).",
+                "WARN",
+            )
         _log("Vorschau-Dokumente (DOCX) erstellt.", "SUCCESS")
         if export_as_pdf and haupt_export_ordner and os.path.isdir(haupt_export_ordner):
             _log("\n--- PDF-Erstellung (Vorschau) ---\n", "SEP")
@@ -1080,6 +1472,7 @@ def verarbeite_vorlagen(
     signage_rules=None,
     reuse_lageplan_from_last_export=False,
     previous_export_root=None,
+    parallel_doc_generation=False,
 ):
     """
     Die zentrale Orchestrierungsfunktion, die den gesamten Prozess steuert.
@@ -1186,55 +1579,19 @@ def verarbeite_vorlagen(
             datetime.now().strftime('%Y-%m-%d_%H%M%S') + "_" + projekt_name
         )
 
-        current_doc = 0
-
-        def process_and_save(template, data, is_anlage):
-            nonlocal current_doc
-            current_doc += 1
-            if worker_thread and worker_thread.isInterruptionRequested():
-                return
-
-            progress_callback(current_doc, overall_total_steps)
-            file_callback(os.path.basename(template))
-            try:
-                context = data.copy()
-                for key, fallback_value in fallback_marken.items():
-                    primary_value = context.get(key)
-                    is_empty = pd.isna(primary_value) or (isinstance(primary_value, str) and not primary_value.strip())
-                    if is_empty:
-                        context[key] = fallback_value
-
-                # datetime_utc dynamisch hinzufügen/überschreiben
-                try:
-                    # Nur aktuelles Datum im Format JJJJ-MM-DD
-                    context['datetime_utc'] = datetime.now().strftime('%Y-%m-%d')
-                except Exception as e:
-                    context['datetime_utc'] = f"[Format-Fehler: {e}]"
-                    _log(f"Ungültiges Zeitstempel-Format: '{datetime_utc_format}'. Fehler: {e}", "WARN")
-
-                context['_bilder_ordner'] = bilder_ordner
-
-                doc = ersetze_platzhalter_mit_docxtpl(template, context, svg_png_map, _log)
-                _speichere_dokument(
-                    doc,
-                    template,
-                    data,
-                    is_anlage,
-                    haupt_export_ordner,
-                    categories,
-                    _log,
-                    is_dark_mode
-                )
-            except TemplateSyntaxError as e:
-                _log(
-                    f"FEHLER in Vorlage '{os.path.basename(template)}': Ungültige Syntax. Bitte prüfen Sie die Platzhalter.",
-                    "FATAL"
-                )
-                _log(f"Details: {e}", "ERROR")
-            except Exception as e:
-                _log(f"FEHLER bei '{os.path.basename(template)}': {e}", "ERROR")
-
+        seitenpruefung_pending = []
+        seitenpruefung_lock = threading.Lock() if parallel_doc_generation else None
+        jobs = []
+        job_ix = 0
         warned_lageplan_no_export = False
+
+        def _eintrag_shallow(eintrag):
+            if isinstance(eintrag, dict):
+                return {k: eintrag[k] for k in eintrag}
+            try:
+                return dict(eintrag)
+            except Exception:
+                return eintrag
 
         _log("\n--- Verarbeitung 'Anlagen' ---\n", "SEP")
         for eintrag in datensaetze:
@@ -1265,7 +1622,16 @@ def verarbeite_vorlagen(
                                 "INFO",
                             )
                             warned_lageplan_no_export = True
-                        process_and_save(vorlage_pfad, eintrag, True)
+                        job_ix += 1
+                        jobs.append(
+                            {
+                                "type": "render",
+                                "ix": job_ix,
+                                "template": vorlage_pfad,
+                                "data": _eintrag_shallow(eintrag),
+                                "is_anlage": True,
+                            }
+                        )
                         continue
                     src = find_lageplan_source_file(
                         previous_export_root, categories, vorlage_pfad, eintrag
@@ -1274,24 +1640,18 @@ def verarbeite_vorlagen(
                         vorlage_pfad, eintrag, haupt_export_ordner, categories
                     )
                     if src:
-                        try:
-                            os.makedirs(export_kat, exist_ok=True)
-                            shutil.copy2(src, os.path.join(export_kat, ziel_name))
-                        except OSError as e:
-                            _log(
-                                f"Lageplan kopieren fehlgeschlagen ({e}), neu aus Vorlage.",
-                                "WARN",
-                            )
-                            process_and_save(vorlage_pfad, eintrag, True)
-                            continue
-                        current_doc += 1
-                        if worker_thread and worker_thread.isInterruptionRequested():
-                            break
-                        progress_callback(current_doc, overall_total_steps)
-                        file_callback(vn)
-                        _log(
-                            f"Lageplan übernommen (letzter Export): '{ziel_name}'",
-                            "SUCCESS",
+                        job_ix += 1
+                        jobs.append(
+                            {
+                                "type": "lageplan_copy",
+                                "ix": job_ix,
+                                "export_kat": export_kat,
+                                "ziel_name": ziel_name,
+                                "src": src,
+                                "vorlage_pfad": vorlage_pfad,
+                                "vn": vn,
+                                "eintrag": _eintrag_shallow(eintrag),
+                            }
                         )
                         continue
                     _log(
@@ -1299,22 +1659,85 @@ def verarbeite_vorlagen(
                         "Erstellung wie gewohnt aus Vorlage.",
                         "INFO",
                     )
-                    process_and_save(vorlage_pfad, eintrag, True)
+                    job_ix += 1
+                    jobs.append(
+                        {
+                            "type": "render",
+                            "ix": job_ix,
+                            "template": vorlage_pfad,
+                            "data": _eintrag_shallow(eintrag),
+                            "is_anlage": True,
+                        }
+                    )
                     continue
 
-                process_and_save(vorlage_pfad, eintrag, True)
+                job_ix += 1
+                jobs.append(
+                    {
+                        "type": "render",
+                        "ix": job_ix,
+                        "template": vorlage_pfad,
+                        "data": _eintrag_shallow(eintrag),
+                        "is_anlage": True,
+                    }
+                )
 
         if worker_thread and not worker_thread.isInterruptionRequested():
             _log("\n--- Verarbeitung 'Allgemein' ---\n", "SEP")
             if allgemein_templates:
                 for vorlage_pfad in allgemein_templates:
-                    process_and_save(vorlage_pfad, datensaetze[0], False)
+                    job_ix += 1
+                    jobs.append(
+                        {
+                            "type": "render",
+                            "ix": job_ix,
+                            "template": vorlage_pfad,
+                            "data": _eintrag_shallow(datensaetze[0]),
+                            "is_anlage": False,
+                        }
+                    )
+
+        if len(jobs) != generation_docs_total:
+            _log(
+                f"Hinweis: Sammel-Jobs ({len(jobs)}) vs. gezählte erwartete Dokumente ({generation_docs_total}) — ggf. Log prüfen.",
+                "WARN",
+            )
+
+        _fuehre_dokument_gen_jobs(
+            jobs,
+            parallel_doc_generation,
+            progress_callback,
+            file_callback,
+            overall_total_steps,
+            worker_thread,
+            svg_png_map,
+            haupt_export_ordner,
+            categories,
+            datetime_utc_format,
+            bilder_ordner,
+            fallback_marken,
+            seitenpruefung_pending,
+            seitenpruefung_lock,
+            is_dark_mode,
+            _log,
+        )
+
+        seitenpruefung_warnungen = _fuehre_seitenpruefung_batched(
+            seitenpruefung_pending, _log, is_dark_mode
+        )
 
         if worker_thread and worker_thread.isInterruptionRequested():
             _log("\n" + "=" * 60, "SEP")
             _log("Vorgang vom Benutzer abgebrochen.", "WARN")
         else:
             _log("\n" + "=" * 60, "SEP")
+            if seitenpruefung_warnungen:
+                _log("--- Seitenprüfung: Zusammenfassung ---", "SEP")
+                _log(
+                    f"Bei {len(seitenpruefung_warnungen)} erzeugter Datei(en) weist das Dokument "
+                    f"mehr Seiten auf als die zugehörige Vorlage (Details stehen im Log oben, Prüfung per Word, Windows).",
+                    "WARN",
+                )
             _log("Alle Aufgaben abgeschlossen.", "SUCCESS")
             if export_as_pdf and haupt_export_ordner and os.path.isdir(haupt_export_ordner):
                 _log("\n--- PDF-Erstellung ---\n", "SEP")
