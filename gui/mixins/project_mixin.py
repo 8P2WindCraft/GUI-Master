@@ -26,6 +26,48 @@ class ProjectFileMixin:
         r'(?i)([a-z]:)([\\/])Users\2\{username\}',
     )
 
+    def _project_root_dir(self):
+        """Liefert das konfigurierte zentrale Projektverzeichnis (lokal aufgelöst)."""
+        root = (self.settings.get('project_root_dir', '') or '').strip()
+        if not root and hasattr(self, 'project_root_dir_edit'):
+            root = self.project_root_dir_edit.text().strip()
+        return self._denormalize_path(root)
+
+    def on_project_root_dir_change(self):
+        """Speichert Änderungen am zentralen Projektverzeichnis."""
+        if not hasattr(self, 'project_root_dir_edit'):
+            return
+        value = self.project_root_dir_edit.text().strip()
+        self.settings['project_root_dir'] = value
+        self.save_all_settings()
+        self.validate_path(self.project_root_dir_edit)
+
+    def browse_project_root_dir(self):
+        """Ordnerdialog für das zentrale Projektverzeichnis."""
+        start_dir = self._project_root_dir() or os.getcwd()
+        picked = QFileDialog.getExistingDirectory(self, "Projektverzeichnis auswählen", start_dir)
+        if not picked:
+            return
+        if hasattr(self, 'project_root_dir_edit'):
+            self.project_root_dir_edit.setText(picked)
+        self.on_project_root_dir_change()
+
+    def _project_dialog_start_dir(self):
+        """
+        Startordner für Projektdatei-Dialoge:
+        1) Ordner der aktuell geöffneten Projektdatei,
+        2) zentrales Projektverzeichnis,
+        3) cwd.
+        """
+        if self.current_project_path:
+            cur_dir = os.path.dirname(self.current_project_path)
+            if cur_dir and os.path.isdir(cur_dir):
+                return cur_dir
+        root = self._project_root_dir()
+        if root and os.path.isdir(root):
+            return root
+        return os.getcwd()
+
     def _normalize_path(self, path):
         """
         Normalisiert einen Pfad für portables Speichern:
@@ -68,6 +110,15 @@ class ProjectFileMixin:
                         getattr(self, f"{key}_edit").setText(normalized)
                         self.validate_path(getattr(self, f"{key}_edit"))
                     changed_count += 1
+        root = (self.settings.get('project_root_dir', '') or '').strip()
+        if root and '{username}' not in root:
+            normalized_root = self._normalize_path(root)
+            if normalized_root != root:
+                self.settings['project_root_dir'] = normalized_root
+                if hasattr(self, 'project_root_dir_edit'):
+                    self.project_root_dir_edit.setText(normalized_root)
+                    self.validate_path(self.project_root_dir_edit)
+                changed_count += 1
 
         if changed_count > 0:
             self.save_all_settings()
@@ -97,6 +148,15 @@ class ProjectFileMixin:
                 if hasattr(self, f"{key}_edit"):
                     getattr(self, f"{key}_edit").setText(denorm)
                     self.validate_path(getattr(self, f"{key}_edit"))
+                changed_count += 1
+        root = (self.settings.get('project_root_dir', '') or '').strip()
+        if root and '{username}' in root:
+            denorm_root = self._denormalize_path(root)
+            if denorm_root != root:
+                self.settings['project_root_dir'] = denorm_root
+                if hasattr(self, 'project_root_dir_edit'):
+                    self.project_root_dir_edit.setText(denorm_root)
+                    self.validate_path(self.project_root_dir_edit)
                 changed_count += 1
 
         if changed_count > 0:
@@ -202,6 +262,11 @@ class ProjectFileMixin:
         # Projektname (Export-Ordner)
         if hasattr(self, 'projekt_name_override_edit'):
             self.projekt_name_override_edit.setText(self.settings.get('projekt_name_override', ''))
+        if hasattr(self, 'project_root_dir_edit'):
+            project_root = self._denormalize_path(self.settings.get('project_root_dir', ''))
+            self.settings['project_root_dir'] = project_root
+            self.project_root_dir_edit.setText(project_root)
+            self.validate_path(self.project_root_dir_edit)
         # PDF-Export
         if hasattr(self, 'export_as_pdf_check'):
             self.export_as_pdf_check.setChecked(self.settings.get('export_as_pdf', False))
@@ -229,6 +294,10 @@ class ProjectFileMixin:
             self._apply_signage_rules_to_ui()
         # Einstellungen persistieren
         self.save_all_settings()
+        if hasattr(self, 'refresh_datenansicht'):
+            self.refresh_datenansicht()
+        if hasattr(self, 'refresh_media_sizes_table'):
+            self.refresh_media_sizes_table()
 
     def _remember_recent_project(self, file_path):
         """Merkt sich ein Projekt in der Liste zuletzt verwendeter Projekte."""
@@ -286,6 +355,8 @@ class ProjectFileMixin:
             self.refresh_template_checkboxes()
         if hasattr(self, '_apply_signage_rules_to_ui'):
             self._apply_signage_rules_to_ui()
+        if hasattr(self, 'refresh_media_sizes_table'):
+            self.refresh_media_sizes_table()
         self.save_all_settings()
 
     def project_open_path(self, file_path):
@@ -317,7 +388,7 @@ class ProjectFileMixin:
     def project_open(self):
         """Öffnet eine Projektdatei (*.dta.json) per Dateidialog."""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Projekt öffnen", os.getcwd(), "Projektdateien (*.dta.json *.json)"
+            self, "Projekt öffnen", self._project_dialog_start_dir(), "Projektdateien (*.dta.json *.json)"
         )
         if file_path:
             self.project_open_path(file_path)
@@ -337,10 +408,11 @@ class ProjectFileMixin:
     def project_save_as(self):
         """Speichert das aktuelle Projekt unter einem neuen Dateinamen (*.dta.json)."""
         default_name = self._build_default_project_filename()
+        start_dir = self._project_dialog_start_dir()
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Projekt speichern unter",
-            os.path.join(os.getcwd(), default_name),
+            os.path.join(start_dir, default_name),
             "Projektdateien (*.dta.json)"
         )
         if not file_path:

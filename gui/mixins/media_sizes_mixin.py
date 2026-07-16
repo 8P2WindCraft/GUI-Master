@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -33,7 +34,9 @@ class MediaSizesMixin:
         intro = QLabel(
             "Standard: Gruppierung nach Basis-Platzhalter – eine Größenänderung gilt für alle gelisteten "
             "Vorlagen. Referenz und Größe wie erste Anlagenzeile + Fallback (Blatt 2). "
-            "Ohne Häkchen: jede Vorlage einzeln. Speichern schreibt nach Blatt 2."
+            "Ohne Häkchen: jede Vorlage einzeln. Speichern schreibt nach Blatt 2. "
+            "Die Tabelle wird beim Tab-Wechsel und bei Änderungen an Excel-, Vorlagen- oder Bilder-Pfad "
+            "automatisch neu geladen; „Aktualisieren“ erzwingt ein erneutes Einlesen."
         )
         intro.setWordWrap(True)
         intro.setStyleSheet("color: #555;")
@@ -41,7 +44,9 @@ class MediaSizesMixin:
 
         btn_row = QHBoxLayout()
         self.media_sizes_refresh_btn = QPushButton("Aktualisieren")
-        self.media_sizes_refresh_btn.setToolTip("Excel und Vorlagen neu einlesen")
+        self.media_sizes_refresh_btn.setToolTip(
+            "Excel und Vorlagen sofort neu einlesen (z. B. nach manueller Bearbeitung außerhalb der App)."
+        )
         self.media_sizes_refresh_btn.clicked.connect(self.refresh_media_sizes_table)
         btn_row.addWidget(self.media_sizes_refresh_btn)
         self.media_sizes_save_btn = QPushButton("Änderungen in Excel speichern")
@@ -81,6 +86,7 @@ class MediaSizesMixin:
         self.media_sizes_detail_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.media_sizes_detail_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.media_sizes_detail_table.hide()
+        self._style_media_sizes_table(self.media_sizes_detail_table, preview_col=4)
         layout.addWidget(self.media_sizes_detail_table)
 
         self.media_sizes_group_table = QTableWidget()
@@ -100,11 +106,28 @@ class MediaSizesMixin:
         self.media_sizes_group_table.horizontalHeader().setStretchLastSection(True)
         self.media_sizes_group_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.media_sizes_group_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._style_media_sizes_table(self.media_sizes_group_table, preview_col=3)
         layout.addWidget(self.media_sizes_group_table)
 
         self._media_sizes_detail_rows = []
         self._media_sizes_row_meta = []
         self._media_sizes_basis_row_meta = []
+
+    def _style_media_sizes_table(self, table: QTableWidget, preview_col: int) -> None:
+        """Einheitliche Darstellung: Zebra-Zeilen, kompakte Kopfzeile, feste Vorschau-Spalte."""
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setVisible(False)
+        table.setWordWrap(False)
+        hdr = table.horizontalHeader()
+        hdr.setHighlightSections(False)
+        hdr.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        for c in range(table.columnCount()):
+            if c == preview_col:
+                hdr.setSectionResizeMode(c, QHeaderView.Fixed)
+                table.setColumnWidth(c, 76)
+            else:
+                hdr.setSectionResizeMode(c, QHeaderView.Interactive)
+        hdr.setStretchLastSection(True)
 
     def _on_media_sizes_group_toggled(self, checked: bool):
         self.media_sizes_detail_table.setVisible(not checked)

@@ -1,7 +1,7 @@
-# PySide7.0 GUI mit Themes - EXE Build Anleitung
+# GUI mit Themes - EXE Build Anleitung
 
 ## Übersicht
-Diese Anleitung erklärt, wie Sie die PySide7.0 GUI-Anwendung mit integrierten Themes in eine ausführbare EXE-Datei verwandeln.
+Diese Anleitung erklärt, wie Sie die GUI-Anwendung mit integrierten Themes in eine ausführbare EXE-Datei verwandeln.
 
 ## Voraussetzungen
 
@@ -16,7 +16,7 @@ pip install pyinstaller
 
 ### 3. Projektdateien
 Stellen Sie sicher, dass folgende Dateien vorhanden sind:
-- `pyside7.0_gui.py` - Hauptanwendung
+- `app.py` - Hauptanwendung
 - `dark.qss` - Dark Theme
 - `girly.qss` - Girly Theme
 - `Logo.ico` - Anwendungs-Icon
@@ -81,7 +81,7 @@ Die fertige EXE-Datei befindet sich im `dist/`-Ordner:
 - Logo-Bild (`Logo.png`)
 
 ### Funktionalitäten
-- Vollständige PySide7.0 GUI
+- Vollständige Desktop-GUI (PySide6)
 - Excel-Datenverarbeitung
 - Word-Dokumentenerstellung
 - QR-Code-Generierung
@@ -147,7 +147,7 @@ Bei Problemen:
 ## Changelog
 
 ### Version 7.0
-- PySide7.0 GUI mit Themes
+- Desktop-GUI mit Themes
 - Integrierte Theme-Unterstützung
 - Optimierte PyInstaller-Konfiguration
 - Erweiterte Build-Skripte

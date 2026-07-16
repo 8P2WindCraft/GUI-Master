@@ -6,6 +6,7 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QSplitter,
     QTableWidget,
@@ -24,7 +25,10 @@ class BilderVorschauMixin:
         """Erstellt den Inhalt des 'Bilder-Vorschau'-Tabs: Dateiliste des Bilder-Ordners und Bildvorschau."""
         layout = QVBoxLayout(tab)
 
-        self.bilder_vorschau_hint_label = QLabel("Bitte in der Hauptsteuerung einen Bilder-Ordner wählen.")
+        self.bilder_vorschau_hint_label = QLabel(
+            "Ordnerinhalt (alle unterstützten Bildformate). Für Vorschau zu Excel-Platzhaltern siehe "
+            "Tab „Bilder & QR‑Größen“. Hier in der Hauptsteuerung den Bilder‑Ordner wählen."
+        )
         self.bilder_vorschau_hint_label.setStyleSheet("color: #666; padding: 8px;")
         layout.addWidget(self.bilder_vorschau_hint_label)
 
@@ -33,10 +37,15 @@ class BilderVorschauMixin:
         self.bilder_vorschau_table = QTableWidget()
         self.bilder_vorschau_table.setColumnCount(2)
         self.bilder_vorschau_table.setHorizontalHeaderLabels(["Dateiname", "Dateityp"])
-        self.bilder_vorschau_table.horizontalHeader().setStretchLastSection(True)
         self.bilder_vorschau_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.bilder_vorschau_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.bilder_vorschau_table.itemSelectionChanged.connect(self._on_bilder_vorschau_selection_changed)
+        self.bilder_vorschau_table.setAlternatingRowColors(True)
+        self.bilder_vorschau_table.verticalHeader().setVisible(False)
+        bh = self.bilder_vorschau_table.horizontalHeader()
+        bh.setHighlightSections(False)
+        bh.setSectionResizeMode(0, QHeaderView.Stretch)
+        bh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         splitter.addWidget(self.bilder_vorschau_table)
 
         preview_frame = QFrame()
@@ -58,6 +67,12 @@ class BilderVorschauMixin:
 
     def _on_tab_changed(self, index):
         """Lädt die Bilder-Vorschau-Liste neu, wenn der Bilder-Vorschau-Tab aktiv wird."""
+        if hasattr(self, 'datenansicht_tab_index') and index == self.datenansicht_tab_index:
+            if hasattr(self, 'refresh_datenansicht'):
+                self.refresh_datenansicht()
+        if hasattr(self, 'media_sizes_tab_index') and index == self.media_sizes_tab_index:
+            if hasattr(self, 'refresh_media_sizes_table'):
+                self.refresh_media_sizes_table()
         if hasattr(self, 'bilder_vorschau_tab_index') and index == self.bilder_vorschau_tab_index:
             self.refresh_bilder_vorschau()
         if hasattr(self, 'vorlagen_tab_index') and index == self.vorlagen_tab_index:
@@ -77,7 +92,9 @@ class BilderVorschauMixin:
         self.bilder_vorschau_preview_label.setText("Keine Vorschau")
         if not path:
             self.bilder_vorschau_hint_label.setVisible(True)
-            self.bilder_vorschau_hint_label.setText("Bitte in der Hauptsteuerung einen Bilder-Ordner wählen.")
+            self.bilder_vorschau_hint_label.setText(
+                "Kein Bilder‑Ordner gesetzt – in der Hauptsteuerung „Bilder‑Ordner“ wählen."
+            )
             return
         if not os.path.isdir(path):
             self.bilder_vorschau_hint_label.setVisible(True)

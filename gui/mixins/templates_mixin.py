@@ -3,6 +3,7 @@ import os
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QGroupBox,
     QHBoxLayout,
@@ -10,6 +11,8 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QStyle,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -25,7 +28,9 @@ class TemplatesMixin:
         layout = QVBoxLayout(tab)
         hint_top = QLabel(
             "Die Pfade zu Excel und Vorlagen-Ordner legst du unter <b>Hauptsteuerung</b> fest. "
-            "Hier wählst du die .docx-Dateien für den nächsten Lauf."
+            "Hier wählst du die .docx-Dateien für den nächsten Lauf.<br>"
+            "Pro Vorlage gibt es rechts zwei Vorschau-Buttons: <b>Word</b> (.docx) und <b>PDF</b> "
+            "(PDF nur mit Word + pywin32)."
         )
         hint_top.setWordWrap(True)
         hint_top.setStyleSheet("color: #555;")
@@ -138,12 +143,46 @@ class TemplatesMixin:
             else:
                 cb.setChecked(rel in saved_set)
             cb.stateChanged.connect(self.save_all_settings)
-            prev_btn = QPushButton("Vorschau")
-            prev_btn.setToolTip("Nur diese Vorlage mit der ersten Excel-Zeile erzeugen (Beispiel).")
-            prev_btn.setFixedWidth(88)
-            prev_btn.clicked.connect(lambda checked=False, p=abs_p: self.start_preview_single_template(p))
+            cb.stateChanged.connect(lambda _state: self.update_workflow_status())
+            style = QApplication.instance().style() if QApplication.instance() else None
+            prev_word = QToolButton()
+            prev_word.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            if style is not None:
+                prev_word.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_FileIcon))
+            prev_word.setText("Word")
+            prev_word.setToolTip(
+                "Vorschau dieser Vorlage nur als Word (.docx), erste Excel-Datenzeile — Ordner „…_Vorschau“."
+            )
+            prev_word.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            prev_word.setAutoRaise(True)
+            prev_word.clicked.connect(
+                lambda _checked=False, p=abs_p: self.start_preview_single_template(p, export_as_pdf=False)
+            )
+            prev_pdf = QToolButton()
+            prev_pdf.setText("PDF")
+            prev_pdf.setToolButtonStyle(Qt.ToolButtonTextOnly)
+            prev_pdf.setToolTip(
+                "Vorschau inklusive PDF (Microsoft Word und pywin32 erforderlich), erste Excel-Zeile."
+            )
+            prev_pdf.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            prev_pdf.setAutoRaise(True)
+            prev_pdf.clicked.connect(
+                lambda _checked=False, p=abs_p: self.start_preview_single_template(p, export_as_pdf=True)
+            )
+            prev_pdf.setStyleSheet(
+                "QToolButton { font-weight: 600; font-size: 11px; color: #a40000; padding: 2px 6px; "
+                "min-width: 38px; border: 1px solid #ccc; border-radius: 3px; background: #fafafa; }"
+                "QToolButton:hover { background: #fff0f0; }"
+                "QToolButton::menu-indicator { image: none; }"
+            )
+            prev_word.setStyleSheet(
+                "QToolButton { padding: 2px 6px; border: 1px solid #ccc; border-radius: 3px; background: #fafafa; }"
+                "QToolButton:hover { background: #eef6ff; }"
+                "QToolButton::menu-indicator { image: none; }"
+            )
             row_l.addWidget(cb, 1)
-            row_l.addWidget(prev_btn)
+            row_l.addWidget(prev_word)
+            row_l.addWidget(prev_pdf)
             self._template_checkbox_by_rel[rel] = cb
             self._template_list_layout.addWidget(row)
 
@@ -171,6 +210,8 @@ class TemplatesMixin:
                 "Nur angehakte Vorlagen werden erzeugt. Sortierung nach Kategorien wie unter „Kategorien“ "
                 "(Dateinamen-Präfixe, z. B. b_, ba_); ohne passendes Präfix: „Sonstiges“."
             )
+        if hasattr(self, 'update_workflow_status'):
+            self.update_workflow_status()
 
     def _snapshot_template_selection(self):
         if not hasattr(self, '_template_checkbox_by_rel') or not self._template_checkbox_by_rel:
@@ -187,6 +228,8 @@ class TemplatesMixin:
         for cb in self._template_checkbox_by_rel.values():
             cb.setChecked(True)
         self.save_all_settings()
+        if hasattr(self, 'update_workflow_status'):
+            self.update_workflow_status()
 
     def _template_select_none(self):
         if not hasattr(self, '_template_checkbox_by_rel'):
@@ -194,6 +237,8 @@ class TemplatesMixin:
         for cb in self._template_checkbox_by_rel.values():
             cb.setChecked(False)
         self.save_all_settings()
+        if hasattr(self, 'update_workflow_status'):
+            self.update_workflow_status()
 
     def _template_paths_for_worker(self):
         """None = alle Vorlagen; Liste = nur diese absoluten Pfade; [] = keine / nichts gewählt."""

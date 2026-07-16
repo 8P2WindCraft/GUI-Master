@@ -38,8 +38,22 @@ class GenerationWorkflowMixin:
         worker.current_file.connect(self.update_current_file_label)
         worker.progress.connect(self.update_progress_bar)
 
+    def _ensure_worker_can_start(self):
+        """Verhindert parallele Generierungslaeufe durch Doppelklicks oder zweite Aktionen."""
+        worker = getattr(self, 'worker', None)
+        if worker is not None and worker.isRunning():
+            QMessageBox.information(
+                self,
+                "Vorgang läuft",
+                "Es läuft bereits ein Vorgang. Bitte warten oder den aktuellen Vorgang abbrechen.",
+            )
+            return False
+        return True
+
     def start_dry_run(self):
         """Startet den Trockenlauf-Prozess."""
+        if not self._ensure_worker_can_start():
+            return
         if not all(self.paths.get(k) for k in ['excel_path', 'vorlagen_ordner']):
             QMessageBox.warning(self, "Fehlende Pfade", "Bitte Excel- und Vorlagen-Pfad für den Trockenlauf angeben!")
             return
@@ -93,6 +107,8 @@ class GenerationWorkflowMixin:
 
     def start_preview_batch(self):
         """Stapel-Vorschau: je eine Ausgabe pro gewählter Vorlage, erste Excel-Zeile für Anlagen."""
+        if not self._ensure_worker_can_start():
+            return
         if not all(self.paths.get(k) for k in ['excel_path', 'vorlagen_ordner', 'export_ordner']):
             QMessageBox.warning(
                 self,
@@ -130,8 +146,13 @@ class GenerationWorkflowMixin:
         self.worker.start()
         self.set_ui_running_state(True)
 
-    def start_preview_single_template(self, template_abs):
-        """Einzel-Vorschau für eine Vorlage (unabhängig von der Checkbox)."""
+    def start_preview_single_template(self, template_abs, *, export_as_pdf=False):
+        """Einzel-Vorschau für eine Vorlage (unabhängig von der Checkbox).
+
+        ``export_as_pdf``: True = nach DOCX auch PDF erzeugen und bevorzugt öffnen (Word/pywin32).
+        """
+        if not self._ensure_worker_can_start():
+            return
         if not all(self.paths.get(k) for k in ['excel_path', 'vorlagen_ordner', 'export_ordner']):
             QMessageBox.warning(
                 self,
@@ -150,9 +171,13 @@ class GenerationWorkflowMixin:
             selected_template_paths=None,
             preview_run=True,
             preview_template_abs=template_abs,
+            export_as_pdf=bool(export_as_pdf),
         )
 
-        self._show_template_row_preview_ui(os.path.basename(template_abs))
+        label = os.path.basename(template_abs)
+        if export_as_pdf:
+            label = f"{label} (PDF)"
+        self._show_template_row_preview_ui(label)
         self.worker = Worker(**worker_params)
         self._connect_worker_with_progress(self.worker)
         self.worker.current_file.connect(self._on_template_row_preview_file)
@@ -168,6 +193,8 @@ class GenerationWorkflowMixin:
         - Erstellt und startet den Worker-Thread mit allen notwendigen Parametern.
         - Deaktiviert den 'Start'-Knopf, um doppelte Ausführungen zu verhindern.
         """
+        if not self._ensure_worker_can_start():
+            return
         if not all(self.paths.get(k) for k in ['excel_path', 'vorlagen_ordner', 'export_ordner']):
             QMessageBox.warning(self, "Fehlende Pfade", "Bitte Excel-, Vorlagen- und Export-Pfad angeben!")
             return
@@ -212,6 +239,8 @@ class GenerationWorkflowMixin:
             self.current_file_label.setText("Bereit zum Starten...")
         self.open_export_folder_btn.setVisible(False)
         self.update_export_action_buttons(is_running)
+        if hasattr(self, 'update_workflow_status'):
+            self.update_workflow_status()
 
     def handle_close_or_cancel(self):
         """Schließt die App oder bricht den Worker ab."""
@@ -256,7 +285,9 @@ class GenerationWorkflowMixin:
         elif is_preview:
             if success and export_path:
                 self.current_file_label.setText("Vorschau abgeschlossen.")
-                want_pdf = bool(self.settings.get('export_as_pdf'))
+                want_pdf = bool(
+                    getattr(self.worker, "params", {}).get("export_as_pdf", False)
+                )
                 opened = False
                 if want_pdf:
                     pdf_p = self._first_pdf_under_dir(export_path)

@@ -1,6 +1,7 @@
 """
 Hintergrund-Threads: Generierung (Word/docxtpl) und PDF-Konvertierung.
 """
+import inspect
 import traceback
 
 from PySide6.QtCore import QThread, Signal
@@ -44,10 +45,16 @@ class Worker(QThread):
             preview_run = thread_safe_params.pop('preview_run', False)
             preview_template_abs = thread_safe_params.pop('preview_template_abs', None)
 
+            def _filter_kwargs_for(func, kwargs):
+                """Nur Argumente übergeben, die die Ziel-Funktion tatsächlich akzeptiert."""
+                sig = inspect.signature(func)
+                return {k: v for k, v in kwargs.items() if k in sig.parameters}
+
             if preview_run:
                 thread_safe_params.pop('dry_run', None)
+                filtered_params = _filter_kwargs_for(verarbeite_vorlagen_preview, thread_safe_params)
                 result = verarbeite_vorlagen_preview(
-                    **thread_safe_params,
+                    **filtered_params,
                     preview_template_abs=preview_template_abs,
                 )
                 if not self.isInterruptionRequested():
@@ -55,7 +62,8 @@ class Worker(QThread):
                 else:
                     self.finished.emit(False, None)
             else:
-                result = verarbeite_vorlagen(**thread_safe_params)
+                filtered_params = _filter_kwargs_for(verarbeite_vorlagen, thread_safe_params)
+                result = verarbeite_vorlagen(**filtered_params)
 
                 if self.dry_run:
                     self.finished.emit(result, None)  # Trockenlauf: bool

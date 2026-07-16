@@ -27,3 +27,9 @@ settings.json
 !Logo.ico
 !Logo.png
 !pyside7.0_gui.spec
+
+# Local/machine-specific project data
+/settings-*.json
+/*.dta.json
+/*.dta.dta.json
+/Archiv_*/

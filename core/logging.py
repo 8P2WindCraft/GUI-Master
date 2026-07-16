@@ -1,5 +1,16 @@
+import html
 import re
 from datetime import datetime
+
+
+def _format_log_html(msg):
+    """Escaped Log-Text und erhaelt gezielte HTML-Hervorhebungen."""
+    msg_html = html.escape(str(msg)).replace("\n", "<br>")
+    # Dateinamen fett machen (z.B. 'template.docx')
+    msg_html = re.sub(r"&#x27;([^&#]+?\.\w+)&#x27;", r"<strong>'\1'</strong>", msg_html)
+    # Platzhalter-Sets lila machen (z.B. {'var1', 'var2'})
+    msg_html = re.sub(r"(\s*\{.*?\})", r'<span style="color: #8A2BE2;">\1</span>', msg_html)
+    return msg_html
 
 
 def _log_handler(msg, level="INFO", log_callback=None, is_dark_mode=False):
@@ -19,7 +30,7 @@ def _log_handler(msg, level="INFO", log_callback=None, is_dark_mode=False):
         plain_message += '\n'
 
     if log_callback:
-        # GUI-Logging: HTML aus den ursprünglichen Daten erstellen
+        # GUI-Logging: HTML aus escaped Plaintext plus kontrollierten Hervorhebungen erstellen
         color_map = {
             "INFO": "#0077CC",      # Blau
             "SUCCESS": "#2E8B57",   # Seegrün
@@ -30,12 +41,7 @@ def _log_handler(msg, level="INFO", log_callback=None, is_dark_mode=False):
         }
         color = color_map.get(level_upper, "black")
 
-        # KEIN Escaping mehr! msg wird als Plaintext behandelt, aber HTML-Formatierung wird hinzugefügt
-        msg_html = msg.replace("\n", "<br>")
-        # Dateinamen fett machen (z.B. 'template.docx')
-        msg_html = re.sub(r"'([^']+\.\w+)'", r"<strong>'\1'</strong>", msg_html)
-        # Platzhalter-Sets lila machen (z.B. {'var1', 'var2'})
-        msg_html = re.sub(r"(\s*\{.*?\})", r'<span style="color: #8A2BE2;">\1</span>', msg_html)
+        msg_html = _format_log_html(msg)
 
         if level_upper == "SEP":
             html_message = f'<div style="display:block; color: {color}; text-align: center; font-family: monospace; margin: 5px 0;">{msg_html}</div>'

@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpinBox,
-    QTableView,
     QVBoxLayout,
     QWidget,
 )
@@ -39,7 +38,7 @@ class MainControlsMixin:
         self.excel_basename_line.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
-        self.excel_basename_line.setPlaceholderText("Keine Excel-Datei gewählt")
+        self.excel_basename_line.setPlaceholderText("Kein Projektname verfügbar")
         name_font = self.excel_basename_line.font()
         name_font.setBold(True)
         self.excel_basename_line.setFont(name_font)
@@ -52,10 +51,18 @@ class MainControlsMixin:
             'bilder_ordner': 'Bilder-Ordner (optional)',
             'export_ordner': 'Export-Ordner'
         }
+        path_placeholders = {
+            'excel_path': 'Pfad zur Master-Excel (.xlsx / .xls)',
+            'vorlagen_ordner': 'Ordner mit Unterordnern …\\anlagen\\ und …\\allgemein\\',
+            'bilder_ordner': 'Ordner mit Bildern für *_img-Platzhalter (optional)',
+            'export_ordner': 'Zielordner für erzeugte Dokumente',
+        }
         for key, name in path_map.items():
             row = QHBoxLayout()
             row.addWidget(QLabel(f"{name}:"))
             path_edit = QLineEdit(self.paths.get(key, ''))
+            path_edit.setPlaceholderText(path_placeholders.get(key, ''))
+            path_edit.setClearButtonEnabled(True)
             path_edit.editingFinished.connect(lambda k=key, p=path_edit: self.on_path_change(k, p.text()))
             path_edit.textChanged.connect(lambda text, widget=path_edit: self.validate_path(widget))
             setattr(self, f"{key}_edit", path_edit)
@@ -70,6 +77,7 @@ class MainControlsMixin:
                 self.projekt_name_override_edit = QLineEdit(self.settings.get('projekt_name_override', ''))
                 self.projekt_name_override_edit.setPlaceholderText("Leer = aus Excel")
                 self.projekt_name_override_edit.editingFinished.connect(self.save_all_settings)
+                self.projekt_name_override_edit.textChanged.connect(lambda _t: self._update_excel_basename_display())
                 proj_row.addWidget(self.projekt_name_override_edit)
                 layout.addLayout(proj_row)
                 continue
@@ -90,11 +98,17 @@ class MainControlsMixin:
             'svg_scale': ('SVG-Skala', (1, 10), 3),
             'png_compression': ('PNG-Komp. (0=Max)', (-1, 100), -1)
         }
+        spin_tooltips = {
+            'header_row': "Excel-Zeile mit den Spaltennamen (1 = erste Zeile der Datei).",
+            'svg_scale': "Skalierung bei der SVG→PNG-Konvertierung für die Word-Ausgabe.",
+            'png_compression': "0 = maximale PNG-Kompression, höher = weniger Kompression; -1 = Standard.",
+        }
         for key, (name, r, default) in setting_map.items():
             settings_layout.addWidget(QLabel(name))
             spin = QSpinBox()
             spin.setRange(*r)
             spin.setValue(self.settings.get(key, default))
+            spin.setToolTip(spin_tooltips.get(key, ""))
             spin.valueChanged.connect(self.save_all_settings)
             setattr(self, f"{key}_spin", spin)
             settings_layout.addWidget(spin)
@@ -107,6 +121,20 @@ class MainControlsMixin:
         self.datetime_utc_format_edit.editingFinished.connect(self.save_all_settings)
         utc_format_layout.addWidget(self.datetime_utc_format_edit)
         layout.addLayout(utc_format_layout)
+
+        project_root_layout = QHBoxLayout()
+        project_root_layout.addWidget(QLabel("Projektverzeichnis (zentral):"))
+        self.project_root_dir_edit = QLineEdit(self.settings.get('project_root_dir', ''))
+        self.project_root_dir_edit.setPlaceholderText("Optional: Standardordner für *.dta.json")
+        self.project_root_dir_edit.editingFinished.connect(self.on_project_root_dir_change)
+        self.project_root_dir_edit.textChanged.connect(lambda _text: self.validate_path(self.project_root_dir_edit))
+        project_root_layout.addWidget(self.project_root_dir_edit)
+        project_root_browse_btn = QPushButton("...")
+        project_root_browse_btn.setToolTip("Zentrales Projektverzeichnis auswählen")
+        project_root_browse_btn.clicked.connect(self.browse_project_root_dir)
+        project_root_layout.addWidget(project_root_browse_btn)
+        layout.addLayout(project_root_layout)
+        self.validate_path(self.project_root_dir_edit)
 
         # Versions-Info und Pfad-Normalisierung
         version_layout = QHBoxLayout()
@@ -131,31 +159,6 @@ class MainControlsMixin:
         layout.addLayout(version_layout)
 
         layout.addWidget(QFrame(frameShape=QFrame.HLine))
-        # Bereich Tabelle: Ansicht-Überschrift + Inhalt aus Datei in die Tabelle „zurücklesen“
-        ansicht_row = QHBoxLayout()
-        ansicht_row.addWidget(QLabel("Daten-Ansicht (Blatt 1)"))
-        ansicht_row.addStretch()
-        self.excel_ansicht_writeback_btn = QPushButton("Zurückschreiben")
-        self.excel_ansicht_writeback_btn.setToolTip(
-            "Liest die Excel-Datei erneut und aktualisiert die Tabelle in der Ansicht – "
-            "z. B. nach Speichern in Excel."
-        )
-        self.excel_ansicht_writeback_btn.clicked.connect(self._on_excel_ansicht_zurueckschreiben)
-        ansicht_row.addWidget(self.excel_ansicht_writeback_btn)
-        layout.addLayout(ansicht_row)
-
-        self.table = QTableView()
-        layout.addWidget(self.table)
-        self.progress = QProgressBar()
-        layout.addWidget(self.progress)
-        self.current_file_label = QLabel("Bereit zum Starten...")
-        self.current_file_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.current_file_label)
-
-        self.open_export_folder_btn = QPushButton("Export-Ordner öffnen")
-        self.open_export_folder_btn.clicked.connect(self.open_export_folder)
-        self.open_export_folder_btn.setVisible(False)
-        layout.addWidget(self.open_export_folder_btn)
 
         self.export_as_pdf_check = QCheckBox("Word-Dokumente nach Generierung in PDF umwandeln")
         self.export_as_pdf_check.setChecked(self.settings.get('export_as_pdf', False))
@@ -172,6 +175,36 @@ class MainControlsMixin:
         )
         self.parallel_doc_generation_check.stateChanged.connect(self.save_all_settings)
         layout.addWidget(self.parallel_doc_generation_check)
+
+        workflow_frame = QFrame()
+        workflow_frame.setFrameShape(QFrame.StyledPanel)
+        workflow_layout = QVBoxLayout(workflow_frame)
+        workflow_title = QLabel("Workflow-Status")
+        workflow_title.setStyleSheet("font-weight: 600;")
+        workflow_layout.addWidget(workflow_title)
+        self.workflow_traffic_label = QLabel("Status: Nicht bereit")
+        self.workflow_traffic_label.setStyleSheet(
+            "padding: 4px 8px; border-radius: 4px; background: #f8d7da; color: #721c24; font-weight: 600;"
+        )
+        workflow_layout.addWidget(self.workflow_traffic_label)
+        self.workflow_status_label = QLabel("")
+        self.workflow_status_label.setWordWrap(True)
+        workflow_layout.addWidget(self.workflow_status_label)
+        layout.addWidget(workflow_frame)
+
+        quick_actions_row = QHBoxLayout()
+        quick_actions_row.addWidget(QLabel("Projekt-Quick-Actions:"))
+        quick_new_btn = QPushButton("Neu")
+        quick_new_btn.clicked.connect(self.project_new)
+        quick_actions_row.addWidget(quick_new_btn)
+        quick_open_btn = QPushButton("Öffnen...")
+        quick_open_btn.clicked.connect(self.project_open)
+        quick_actions_row.addWidget(quick_open_btn)
+        quick_save_btn = QPushButton("Speichern")
+        quick_save_btn.clicked.connect(self.project_save)
+        quick_actions_row.addWidget(quick_save_btn)
+        quick_actions_row.addStretch()
+        layout.addLayout(quick_actions_row)
 
         btn_row = QHBoxLayout()
         self.dry_run_btn = QPushButton("Konfiguration prüfen")
@@ -195,20 +228,107 @@ class MainControlsMixin:
         layout.addLayout(btn_row)
 
         self._update_excel_basename_display()
+        self.update_workflow_status()
+
+    def update_workflow_status(self):
+        """Zeigt den aktuellen Stand der Pflichtschritte bis zum Start an."""
+        if not hasattr(self, "workflow_status_label"):
+            return
+
+        missing_for_start = [
+            k for k in ["excel_path", "vorlagen_ordner", "export_ordner"]
+            if not (self.paths.get(k) or "").strip()
+        ]
+        missing_for_dry_run = [
+            k for k in ["excel_path", "vorlagen_ordner"]
+            if not (self.paths.get(k) or "").strip()
+        ]
+
+        templates_total = 0
+        templates_selected = 0
+        if hasattr(self, "_template_checkbox_by_rel") and self._template_checkbox_by_rel:
+            templates_total = len(self._template_checkbox_by_rel)
+            templates_selected = sum(1 for cb in self._template_checkbox_by_rel.values() if cb.isChecked())
+        has_template_selection = templates_total > 0 and templates_selected > 0
+
+        is_running = hasattr(self, "worker") and self.worker is not None and self.worker.isRunning()
+        can_start = (not missing_for_start) and has_template_selection
+        can_dry_run = (not missing_for_dry_run) and has_template_selection
+        can_preview = can_start
+
+        status_parts = []
+        if missing_for_start:
+            status_parts.append(f"1) Fehlende Pflichtpfade: {len(missing_for_start)}")
+        else:
+            status_parts.append("1) Pflichtpfade: OK")
+
+        if templates_total == 0:
+            status_parts.append("2) Vorlagen: keine gefunden")
+        elif templates_selected == 0:
+            status_parts.append(f"2) Vorlagen: 0/{templates_total} gewählt")
+        else:
+            status_parts.append(f"2) Vorlagen: {templates_selected}/{templates_total} gewählt")
+
+        status_parts.append("3) Start bereit: Ja" if can_start else "3) Start bereit: Nein")
+
+        self.workflow_status_label.setText(" | ".join(status_parts))
+        if hasattr(self, "workflow_traffic_label"):
+            if is_running:
+                self.workflow_traffic_label.setText("Status: Lauf aktiv")
+                self.workflow_traffic_label.setStyleSheet(
+                    "padding: 4px 8px; border-radius: 4px; background: #fff3cd; color: #856404; font-weight: 600;"
+                )
+            elif can_start:
+                self.workflow_traffic_label.setText("Status: Bereit")
+                self.workflow_traffic_label.setStyleSheet(
+                    "padding: 4px 8px; border-radius: 4px; background: #d4edda; color: #155724; font-weight: 600;"
+                )
+            else:
+                self.workflow_traffic_label.setText("Status: Nicht bereit")
+                self.workflow_traffic_label.setStyleSheet(
+                    "padding: 4px 8px; border-radius: 4px; background: #f8d7da; color: #721c24; font-weight: 600;"
+                )
+
+        # Buttons nur freigeben, wenn Voraussetzungen erfüllt sind und kein Lauf aktiv ist.
+        if hasattr(self, "start_btn"):
+            self.start_btn.setEnabled((not is_running) and can_start)
+        if hasattr(self, "preview_btn"):
+            self.preview_btn.setEnabled((not is_running) and can_preview)
+        if hasattr(self, "dry_run_btn"):
+            self.dry_run_btn.setEnabled((not is_running) and can_dry_run)
 
     def _update_excel_basename_display(self):
-        """Setzt die obere Zeile auf den Dateinamen der gewählten Excel-Datei (Tooltip = voller Pfad)."""
+        """Setzt die obere Zeile primär auf den Projektnamen (Fallback: Excel-Dateiname)."""
         if not hasattr(self, "excel_basename_line"):
             return
         p = (self.excel_path_edit.text().strip() if hasattr(self, "excel_path_edit") else "")
         if not p and hasattr(self, "paths"):
             p = (self.paths.get("excel_path") or "").strip()
+        project_name = ""
+        if hasattr(self, "projekt_name_override_edit"):
+            project_name = self.projekt_name_override_edit.text().strip()
+        if not project_name and hasattr(self, "settings"):
+            project_name = (self.settings.get("projekt_name_override") or "").strip()
+        if not project_name and hasattr(self, "_read_name_from_excel"):
+            project_name = (self._read_name_from_excel() or "").strip()
+        if project_name and hasattr(self, "_base_name_for_project_dta_file"):
+            project_name = self._base_name_for_project_dta_file(project_name) or project_name
+
+        if project_name:
+            self.excel_basename_line.setText(project_name)
+            tip = "Projektname"
+            if p:
+                tip += f"\nExcel: {p}"
+            self.excel_basename_line.setToolTip(tip)
+            return
+
         if p:
             self.excel_basename_line.setText(os.path.basename(p))
-            self.excel_basename_line.setToolTip(p)
-        else:
-            self.excel_basename_line.clear()
-            self.excel_basename_line.setToolTip("")
+            self.excel_basename_line.setToolTip(f"Kein Projektname gefunden.\nExcel: {p}")
+            return
+
+        self.excel_basename_line.clear()
+        self.excel_basename_line.setToolTip("Kein Projektname gefunden.")
 
     def _on_excel_ansicht_zurueckschreiben(self):
         """Aktualisiert die Tabelle aus der Datei (nach Bearbeitung in Excel)."""

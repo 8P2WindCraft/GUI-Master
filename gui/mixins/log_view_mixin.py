@@ -267,6 +267,8 @@ class LogViewMixin:
         Bei gesperrter Datei (z. B. in Excel geöffnet) wird unter Windows
         ein COM-Fallback verwendet.
         """
+        if not hasattr(self, 'table') or self.table is None:
+            return
         path = self.paths.get('excel_path')
         header_row = self.settings.get('header_row', 3)
         if path and os.path.exists(path):

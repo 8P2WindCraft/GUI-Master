@@ -2,7 +2,7 @@
 import os
 
 a = Analysis(
-    ['pyside7.0_gui.py'],
+    ['app.py'],
     pathex=[os.path.dirname(os.path.abspath(SPEC))],
     binaries=[],
     datas=[

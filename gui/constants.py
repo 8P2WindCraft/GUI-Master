@@ -3,8 +3,8 @@ Zentrale Konstanten der GUI-App (Version, Pfade, Regel-UI, Ressourcen-Filter).
 """
 
 # Version / Build
-VERSION = "7.0.1"
-BUILD_DATE = "2025-01-27"
+VERSION = "8.0.0"
+BUILD_DATE = "2026-05-01"
 
 # Unterstützte Bildformate für den Bilder-Vorschau-Tab
 BILDER_VORSCHAU_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.svg', '.bmp'}

@@ -10,6 +10,7 @@ from .log_view_mixin import LogViewMixin
 from .main_controls_mixin import MainControlsMixin
 from .media_sizes_mixin import MediaSizesMixin
 from .pdf_export_mixin import PdfExportMixin
+from .project_data_view_mixin import ProjectDataViewMixin
 from .project_mixin import ProjectFileMixin
 from .signage_rules_mixin import SignageRulesMixin
 from .templates_mixin import TemplatesMixin
@@ -23,6 +24,7 @@ __all__ = [
     'MainControlsMixin',
     'MediaSizesMixin',
     'PdfExportMixin',
+    'ProjectDataViewMixin',
     'ProjectFileMixin',
     'SignageRulesMixin',
     'TemplatesMixin',

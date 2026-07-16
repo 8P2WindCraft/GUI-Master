@@ -19,7 +19,6 @@
 | Komponente | Technologie | Aufgabe |
 |------------|-------------|---------|
 | `app.py` | PySide6 | Einstieg, QApplication, MainWindow |
-| `pyside7.0_gui.py` | – | Legacy-Einstieg für PyInstaller |
 | `gui/main_window.py` | PySide6 | Hauptfenster, Tabs, Menüs, Worker-Steuerung |
 | `core/logic.py` | docxtpl, pandas, qrcode | Excel-Laden, Vorlagenverarbeitung, Rendering |
 | `core/utils.py` | PySide6 | `resource_path()`, SVG→PNG |
@@ -306,8 +305,7 @@ Separates Modul, nicht Teil der Desktop-GUI-Laufzeit.
 4. **Platzhalter-Reihenfolge:** Bilder → QR → Text, um Konflikte zu vermeiden.
 5. **SVG-Cache:** Pro Lauf werden alle einzigartigen SVGs einmal konvertiert.
 6. **Theme:** `is_dark_mode` beeinflusst die Log-Farben.
-7. **EXE-Build:** `pyinstaller pyside7.0_gui.spec`, Einstieg `pyside7.0_gui.py`.
-8. **Zwei Excel-Workflows:** Hauptlogik in `core.logic`. Zusätzlich existiert `bericht_generator.py` (Tkinter) mit eigenem Flow – ggf. für Legacy-Projekte.
+7. **EXE-Build:** `pyinstaller pyside7.0_gui.spec`, Einstieg `app.py`.
 
 ---
 

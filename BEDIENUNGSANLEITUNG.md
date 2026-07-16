@@ -33,7 +33,7 @@ Die **DocxTpl Automatisierung v7.0** ist eine Software zur automatischen Erstell
 
 ### Start der Anwendung
 1. **EXE-Datei**: Doppelklick auf `DocxTpl_Automatisierung_v7.0.exe`
-2. **Python-Modus**: `python pyside7.0_gui.py`
+2. **Python-Modus**: `python app.py`
 
 ### Erste Schritte
 1. Öffnen Sie die Anwendung

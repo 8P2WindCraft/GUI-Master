@@ -54,6 +54,8 @@ class ThemePathMixin:
         """Wird aufgerufen, wenn ein Pfad geändert wird, und speichert die Einstellung."""
         self.paths[key] = value
         self.save_all_settings()
+        if hasattr(self, 'update_workflow_status'):
+            self.update_workflow_status()
 
         # Aktualisiere Excel-Datenanzeige wenn sich der Excel-Pfad ändert
         if key == 'excel_path':
@@ -66,6 +68,9 @@ class ThemePathMixin:
                 self.refresh_template_checkboxes()
             if hasattr(self, 'refresh_rules_template_combos'):
                 self.refresh_rules_template_combos()
+        if key in {'excel_path', 'vorlagen_ordner', 'bilder_ordner'}:
+            if hasattr(self, 'refresh_media_sizes_table'):
+                self.refresh_media_sizes_table()
 
     def browse(self, key):
         """Öffnet einen Datei- oder Ordnerdialog und aktualisiert das entsprechende Eingabefeld."""
@@ -85,8 +90,10 @@ class ThemePathMixin:
         """Prüft, ob der Pfad in einem QLineEdit existiert und färbt es entsprechend."""
         path = line_edit_widget.text()
         is_optional_empty = 'bilder_ordner' in self.paths and hasattr(self, 'bilder_ordner_edit') and line_edit_widget == self.bilder_ordner_edit and not path
+        if hasattr(self, 'project_root_dir_edit') and line_edit_widget == self.project_root_dir_edit and not path:
+            is_optional_empty = True
 
-        valid_style = "background-color: #e8e8e8; color: #2d2d2d;"  # Leichtes Grau bei gültigem Pfad
+        valid_style = "background-color: #eaf7ea; color: #1f3d1f;"  # Leichtes Grün bei gültigem Pfad
         invalid_style = "background-color: #f8d7da; color: #721c24;"  # Reddish
 
         if os.path.exists(path) or is_optional_empty:

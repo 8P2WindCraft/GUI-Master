@@ -3,6 +3,7 @@ import os
 import shutil
 import tempfile
 import threading
+import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -677,17 +678,23 @@ def _convert_docx_to_pdf_in_folder(ordner, log_callback, progress_callback=None,
     def _verarbeite_einzel(docx_path: str, name: str):
         if file_callback:
             file_callback(name)
+        t0 = time.perf_counter()
         try:
             ok, error = _docx_to_pdf_word_com_single(docx_path)
+            dt_s = time.perf_counter() - t0
             if ok:
                 result["success_count"] += 1
                 log_callback(f"  -> PDF erstellt: {name}", "SUCCESS")
+                log_callback(f"  -> Laufzeit PDF-Konvertierung '{name}': {dt_s:.2f}s", "INFO")
             else:
                 result["failure_count"] += 1
                 log_callback(f"  -> PDF fehlgeschlagen für '{name}': {error}", "ERROR")
+                log_callback(f"  -> Laufzeit PDF-Konvertierung '{name}': {dt_s:.2f}s", "WARN")
         except Exception as e:
+            dt_s = time.perf_counter() - t0
             result["failure_count"] += 1
             log_callback(f"  -> PDF fehlgeschlagen für '{name}': {e}", "ERROR")
+            log_callback(f"  -> Laufzeit PDF-Konvertierung '{name}': {dt_s:.2f}s", "WARN")
 
     use_parallel = os.name == "nt" and len(docx_paths) > 1
     done = 0
@@ -700,17 +707,21 @@ def _convert_docx_to_pdf_in_folder(ordner, log_callback, progress_callback=None,
             )
             with ProcessPoolExecutor(max_workers=_max_word_com_workers()) as ex:
                 future_map = {ex.submit(_docx_to_pdf_com_mp_wrapper, p): p for p in docx_paths}
+                started_at = {p: time.perf_counter() for p in docx_paths}
                 for fut in as_completed(future_map):
                     docx_path, ok, serr = fut.result()
                     name = os.path.basename(docx_path)
+                    dt_s = time.perf_counter() - started_at.get(docx_path, time.perf_counter())
                     if file_callback:
                         file_callback(name)
                     if ok:
                         result["success_count"] += 1
                         log_callback(f"  -> PDF erstellt: {name}", "SUCCESS")
+                        log_callback(f"  -> Laufzeit PDF-Konvertierung '{name}': {dt_s:.2f}s", "INFO")
                     else:
                         result["failure_count"] += 1
                         log_callback(f"  -> PDF fehlgeschlagen für '{name}': {serr}", "ERROR")
+                        log_callback(f"  -> Laufzeit PDF-Konvertierung '{name}': {dt_s:.2f}s", "WARN")
                     done += 1
                     if progress_callback:
                         progress_callback(done, ntot)
@@ -989,6 +1000,15 @@ def _fuehre_dokument_gen_jobs(
     Führt die gesammelten Anlagen-/Allgemein-Jobs (docxtpl oder Lageplan-Kopie) aus.
     parallel_doc_generation: mehrere ThreadPool-Worker; sonst nacheinander.
     """
+    completed_steps = 0
+    completed_lock = threading.Lock()
+
+    def _mark_step_done():
+        nonlocal completed_steps
+        with completed_lock:
+            completed_steps += 1
+            progress_callback(completed_steps, overall_total_steps)
+
     def _eintrag_kopie(eintrag):
         if eintrag is None:
             return {}
@@ -1002,6 +1022,7 @@ def _fuehre_dokument_gen_jobs(
     def _arbeite_lageplan(job):
         if worker_thread and worker_thread.isInterruptionRequested():
             return
+        t0 = time.perf_counter()
         if not job.get("src") or not os.path.isfile(job["src"]):
             _log("Lageplan-Quelldatei fehlt, neu aus Vorlage.", "WARN")
             rj = {
@@ -1031,23 +1052,27 @@ def _fuehre_dokument_gen_jobs(
             }
             _arbeite_render(rj)
             return
-        progress_callback(job["ix"], overall_total_steps)
-        file_callback(job["vn"])
-        _log(
-            f"Lageplan übernommen (letzter Export): '{job['ziel_name']}'",
-            "SUCCESS",
-        )
-        ziel_lage = os.path.join(job["export_kat"], job["ziel_name"])
-        if seitenpruefung_lock is not None:
-            with seitenpruefung_lock:
+        dt_s = time.perf_counter() - t0
+        try:
+            file_callback(job["vn"])
+            _log(
+                f"Lageplan übernommen (letzter Export): '{job['ziel_name']}'",
+                "SUCCESS",
+            )
+            _log(f"Laufzeit Dokument-Job '{job['ziel_name']}' (Lageplan-Kopie): {dt_s:.2f}s", "INFO")
+            ziel_lage = os.path.join(job["export_kat"], job["ziel_name"])
+            if seitenpruefung_lock is not None:
+                with seitenpruefung_lock:
+                    seitenpruefung_pending.append((job["vorlage_pfad"], ziel_lage, job["ziel_name"]))
+            else:
                 seitenpruefung_pending.append((job["vorlage_pfad"], ziel_lage, job["ziel_name"]))
-        else:
-            seitenpruefung_pending.append((job["vorlage_pfad"], ziel_lage, job["ziel_name"]))
+        finally:
+            _mark_step_done()
 
     def _arbeite_render(job):
         if worker_thread and worker_thread.isInterruptionRequested():
             return
-        progress_callback(job["ix"], overall_total_steps)
+        t0 = time.perf_counter()
         file_callback(os.path.basename(job["template"]))
         try:
             data = _eintrag_kopie(job.get("data"))
@@ -1076,14 +1101,31 @@ def _fuehre_dokument_gen_jobs(
                 seitenpruefung_pending=seitenpruefung_pending,
                 seitenpruefung_lock=seitenpruefung_lock,
             )
+            dt_s = time.perf_counter() - t0
+            _log(
+                f"Laufzeit Dokument-Job '{os.path.basename(job['template'])}': {dt_s:.2f}s",
+                "INFO",
+            )
         except TemplateSyntaxError as e:
+            dt_s = time.perf_counter() - t0
             _log(
                 f"FEHLER in Vorlage '{os.path.basename(job['template'])}': Ungültige Syntax. Bitte prüfen Sie die Platzhalter.",
                 "FATAL",
             )
             _log(f"Details: {e}", "ERROR")
+            _log(
+                f"Laufzeit Dokument-Job '{os.path.basename(job['template'])}' bis Fehler: {dt_s:.2f}s",
+                "WARN",
+            )
         except Exception as e:
+            dt_s = time.perf_counter() - t0
             _log(f"FEHLER bei '{os.path.basename(job['template'])}': {e}", "ERROR")
+            _log(
+                f"Laufzeit Dokument-Job '{os.path.basename(job['template'])}' bis Fehler: {dt_s:.2f}s",
+                "WARN",
+            )
+        finally:
+            _mark_step_done()
 
     def _arbeite(job):
         t = job.get("type")
